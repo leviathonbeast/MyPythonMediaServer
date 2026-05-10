@@ -1,254 +1,330 @@
 # Muse
 
-A self-hosted, Subsonic-compatible music server. Designed for personal
-archives in the 100k–500k track range.
+A self-hosted, Subsonic-compatible music server built for personal archives
+in the 100 k – 500 k track range.
 
-- **Backend:** Python 3.11+, FastAPI, SQLite (WAL), FFmpeg for transcoding
-- **Frontend:** TypeScript + Vite, no UI framework, ~9 KB gzipped
-- **Protocol:** Subsonic API 1.16.1 — works with Symfonium, play:Sub,
-  DSub, Substreamer, Sonixd, and any other Subsonic-compatible client.
+| Layer | Stack |
+|---|---|
+| Backend | Python 3.11+, FastAPI, SQLite (WAL mode), FFmpeg |
+| Frontend | TypeScript + Vite — no UI framework, ~54 KB JS / ~21 KB CSS |
+| Protocol | Subsonic API 1.16.1 |
+
+Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
+**Sonixd**, and any other Subsonic client.
 
 ---
 
-## Features
+## What's implemented
 
-**Phase 1 (working):**
+### Library management
 
-- Recursive library scan across local directories and network mounts
-- Incremental scans — unchanged files are skipped via `(mtime, size)` diff
-- Metadata via mutagen → ffprobe → filename, with parent-directory fallback
-- Embedded artwork extraction (ID3 APIC, MP4 `covr`, FLAC pictures)
-  with folder-art fallback (`cover.jpg`, `folder.png`, etc.)
-- HTTP Range requests on raw streams (instant seek in any client)
-- On-the-fly transcoding presets (mp3 320/192/128, opus, ogg)
-- Subsonic endpoints: `ping`, `getLicense`, `getMusicFolders`, `getIndexes`,
-  `getMusicDirectory`, `getArtist`, `getAlbum`, `getAlbumList`,
-  `getAlbumList2`, `search3`, `stream`, `download`, `getCoverArt`, `getUser`
-- Web UI: login, A–Z artist index, album grid, single-album view with
-  tracklist, search, persistent player dock, library/scan admin
+- Recursive scan across any number of local or network-mounted directories
+- Incremental rescans — files unchanged since last scan are skipped via
+  `(mtime, size)` diff; a 200 k-track rescan typically takes seconds
+- Metadata pipeline: mutagen → ffprobe → filename, with parent-directory
+  fallback for untagged files
+- Release-type tagging (`album`, `EP`, `single`, `compilation`, `live`, …)
+  sourced from the MusicBrainz `RELEASETYPE` tag
+- Embedded artwork extraction (ID3 APIC, MP4 `covr`, FLAC `PICTURE`) with
+  folder-art fallback (`cover.jpg`, `folder.png`, etc.)
+- Deduplication of identical artwork by content hash — 50 albums sharing
+  the same art store it once
+- Post-scan GC: removes empty albums/artists, dangling starred rows, and
+  orphaned artwork files automatically
 
-**Phase 2 (placeholders return valid empty responses, marked TODO):**
+### Streaming
 
-- Playlists (CRUD)
-- Starred / favourites
-- Scrobble / play-count statistics
-- Now-playing roster
+- HTTP Range support on raw streams — instant seek in every client
+- On-the-fly transcoding via FFmpeg subprocess pipe (never loads the whole
+  file into memory)
+- Transcode presets: MP3 320 / 192 / 128, Opus 192 / 128, OGG 192 / 128
+- Per-user quality cap: server-side `max_streaming_bitrate` clamps any
+  request that would exceed it
+- Master kill-switch (`transcoding_enabled: false`) to bypass all transcoding
+  on local-network installs
+
+### Web UI
+
+- **Library** — A–Z artist index with two view modes:
+  - *List mode* — per-letter buckets, collapsed to 5 with a "show more" toggle
+  - *Grid/poster mode* — circular artist cards; shows album cover art
+    immediately, upgrades to a Last.fm artist photo when one is available
+- **Albums** — paginated album grid; sort by newest, A–Z, year, or random
+- **Album** — full tracklist with disc grouping, cover art, play all
+- **Artist** — albums grouped by release type, Last.fm biography and tags
+- **Search** — full-text across artists, albums, and tracks; per-section
+  "load more" backed by server-side offsets
+- **Settings / Workshop** — trigger scans, manage music folders, configure
+  transcoding quality, run GC / vacuum
+- **Persistent player dock** — queue, scrubber, volume, skip/prev,
+  stream-format badge showing the actual delivered format and bitrate
+
+### Subsonic endpoints
+
+#### Fully implemented
+
+| Endpoint | Notes |
+|---|---|
+| `ping` | Auth probe |
+| `getLicense` | Always returns valid (FOSS) |
+| `getMusicFolders` | All configured roots |
+| `getIndexes` | A–Z artist index; includes `coverArt` per artist |
+| `getMusicDirectory` | Artist and album directory traversal |
+| `getAlbum` | Album with full track list |
+| `getAlbumList` | All sort modes including random |
+| `getAlbumList2` | ID3 variant; same data shape |
+| `getSong` | Single track by id |
+| `search3` | Artists / albums / tracks with server-side pagination (all six offset params) |
+| `stream` | Raw + transcoded, Range-aware |
+| `download` | Raw only (no transcode) |
+| `getCoverArt` | Serves from artwork cache; `size` accepted for compatibility |
+| `getUser` | Returns roles for requesting user (or any user if admin) |
+
+#### Stubs — valid empty responses, not yet implemented
+
+These return well-formed Subsonic responses so clients don't error out,
+but carry no real data yet.
+
+| Endpoint | Status |
+|---|---|
+| `getPlaylists` | Returns empty list |
+| `getPlaylist` | Returns 404 |
+| `createPlaylist` | Returns stub playlist |
+| `getStarred` / `getStarred2` | Returns empty lists |
+| `star` / `unstar` | No-op success |
+| `scrobble` | No-op success |
+| `getNowPlaying` | Returns empty list |
+
+#### Not yet implemented
+
+| Endpoint | Category |
+|---|---|
+| `getArtists` / `getArtist` | ID3 browse (artist detail) |
+| `getGenres` / `getSongsByGenre` | Genre browse |
+| `getArtistInfo` / `getArtistInfo2` | Artist bio via Subsonic |
+| `getAlbumInfo` / `getAlbumInfo2` | Album notes via Subsonic |
+| `getSimilarSongs` / `getSimilarSongs2` | Similar-artist recommendations |
+| `getTopSongs` | Charted tracks by artist |
+| `getRandomSongs` | Random track selection |
+| `search2` | Legacy search (pre–search3) |
+| `updatePlaylist` / `deletePlaylist` | Playlist management |
+| `getUsers` / `createUser` / `updateUser` / `deleteUser` | User management |
+| `changePassword` | Account self-service |
+| `getPlayQueue` / `savePlayQueue` | Cross-device queue sync |
+| `createBookmark` / `getBookmarks` / `deleteBookmark` | Audiobook / podcast position |
+| `getPodcasts` / `getNewestPodcasts` | Podcast feeds |
+| `getInternetRadioStations` | Internet radio |
+| `getScanStatus` / `startScan` | Subsonic-native scan control |
 
 ---
 
 ## Installation
 
-### 1. Prerequisites
+### Prerequisites
 
-- **Python 3.11 or newer**
-- **FFmpeg** (must include `ffmpeg` and `ffprobe` on `PATH`):
-  - Debian/Ubuntu: `sudo apt install ffmpeg`
-  - macOS (Homebrew): `brew install ffmpeg`
-  - Windows (Chocolatey): `choco install ffmpeg`
-- **Node.js 18+** (only if you want to run the dev frontend)
+- **Python 3.11+**
+- **FFmpeg** (`ffmpeg` and `ffprobe` on `PATH`):
+  ```bash
+  # Debian / Ubuntu
+  sudo apt install ffmpeg
+  # macOS
+  brew install ffmpeg
+  ```
+- **Node.js 18+** — only needed to build or develop the frontend
 
-### 2. Backend
+### Backend
 
 ```bash
 git clone <this-repo> muse && cd muse
 
-# Optional but recommended: a virtualenv
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
 pip install -r backend/requirements.txt
 ```
 
-### 3. Configuration
+### Configuration
 
 ```bash
 cp config.example.yaml config.yaml
 $EDITOR config.yaml
 ```
 
-At minimum, set:
+Minimum required changes:
 
-- `music_folders:` — list of paths to scan
-- `admin_password:` — change from the default `admin`
-- `jwt_secret:` — set to a long random string
+```yaml
+music_folders:
+  - /path/to/your/music
 
-Every setting can also be overridden by an env var with the `MUSE_`
-prefix (e.g. `MUSE_DATABASE_PATH=/var/muse/muse.db`).
+admin_password: change-me
+jwt_secret: a-long-random-string
+```
 
-### 4. Run the backend
+Every setting can also be overridden by an environment variable prefixed
+with `MUSE_` (e.g. `MUSE_DATABASE_PATH=/var/muse/library.db`).
+
+Key optional settings:
+
+```yaml
+# Transcode everything to MP3 192 by default (good for remote streaming)
+default_transcode_format: mp3
+default_transcode_bitrate: 192
+
+# Hard cap — transcodes any stream that would exceed this
+max_streaming_bitrate: 320
+
+# Last.fm API key — enables artist bios + photos in the web UI
+# Free key at https://www.last.fm/api/account/create
+lastfm_api_key: your_key_here
+```
+
+### Run
 
 ```bash
-# from the repo root
 python -m backend.main
-# or, equivalently:
+# or
 uvicorn backend.main:app --host 0.0.0.0 --port 4040
 ```
 
-The server listens on `http://0.0.0.0:4040` by default. On first start
-it creates the database, runs migrations, and seeds the admin user.
+On first start the database is created, migrations are applied, and the
+admin user is seeded. The server listens on `http://0.0.0.0:4040`.
 
-### 5. Frontend (development)
+After restarting following config changes, run a scan from the web UI
+(Settings → Start scan) or via the API:
+
+```bash
+curl -X POST http://localhost:4040/api/scan \
+     -H "Authorization: Bearer $JWT"
+```
+
+### Frontend (development)
 
 ```bash
 cd frontend
 npm install
-npm run dev      # http://localhost:5173, proxies /rest and /api to :4040
+npm run dev    # http://localhost:5173, proxies /rest and /api to :4040
 ```
 
-For production, build static assets:
+Production build:
 
 ```bash
-npm run build    # output in frontend/dist/
+npm run build  # output in frontend/dist/
 ```
 
-Serve `frontend/dist/` from any static host (or behind nginx in front of
-the backend). The frontend hits same-origin `/rest/*` and `/api/*`.
-
----
-
-## Trigger a scan
-
-The first time you run Muse the database is empty. Two ways to populate it:
-
-- **Web UI:** sign in → Workshop → "Start a fresh scan"
-- **API:** `curl -X POST http://localhost:4040/api/scan -H "Authorization: Bearer $JWT"`
-
-Re-scans are safe to run any time. Unchanged files are skipped (they're
-detected by `(path, mtime, size)`), so a re-scan of a 200k-track library
-typically takes seconds, not hours.
-
----
-
-## Maintenance & garbage collection
-
-Over time a music server collects a few kinds of cruft that aren't
-caught by ordinary scan-time deletion:
-
-- Albums that became empty when every track on them got re-tagged
-- Artists that lost their last album the same way
-- Favourite/starred entries pointing at things that no longer exist
-- Cover-art files in the cache directory that no album references anymore
-- Database pages left fragmented after large delete cycles
-
-A GC pass that handles the first four runs **automatically at the end of
-every scan**. It's cheap — well under a second on a 500k-track library.
-
-For the fifth (database fragmentation) and for manual triggers, two
-admin endpoints are available:
-
-```bash
-# routine GC (also runs after every scan)
-curl -X POST http://localhost:4040/api/maintenance/gc \
-     -H "Authorization: Bearer $JWT"
-
-# GC + VACUUM — rewrites the .db file compactly. Acquires an exclusive
-# lock for its duration; expect a few seconds of read/write blocking.
-curl -X POST http://localhost:4040/api/maintenance/vacuum \
-     -H "Authorization: Bearer $JWT"
-```
-
-Both return a JSON breakdown: empty albums removed, dangling favourites
-removed, orphan artwork files & bytes freed, before/after database size.
-The Workshop view in the web UI shows the same controls and renders the
-last result.
-
-VACUUM is worth running occasionally — say monthly, or after a big
-library re-organisation. The other steps are essentially free and run on
-their own.
+Serve `frontend/dist/` as static files, with `/rest/*` and `/api/*`
+proxied to the backend.
 
 ---
 
 ## Connecting a Subsonic client
 
-Point any Subsonic-compatible app at:
+| Setting | Value |
+|---|---|
+| Server | `http://your-host:4040` |
+| Username | Your `admin_username` |
+| Password | Your `admin_password` |
 
-- **Server:** `http://your-host:4040` (or your reverse-proxy URL)
-- **Username:** what you set as `admin_username`
-- **Password:** what you set as `admin_password`
+Prefer **token + salt** authentication over plaintext if your client
+offers the choice. Muse supports both.
 
-Tested against:
+---
 
-- **Symfonium** (Android) — recommended
-- **play:Sub** (iOS)
-- **DSub** (Android)
-- **Substreamer** (iOS / Android)
-- **Sonixd** (desktop)
+## Maintenance
 
-If a client offers "Use legacy authentication" or "Send password as
-plaintext", **disable it** and prefer the token+salt scheme — Muse
-supports both, but token+salt is safer over plain HTTP.
+A lightweight GC pass runs automatically at the end of every scan. For
+manual cleanup and database compaction, two admin endpoints are available
+from **Settings → Workshop** or via API:
+
+```bash
+# Routine GC — removes orphan rows and artwork files
+curl -X POST http://localhost:4040/api/maintenance/gc \
+     -H "Authorization: Bearer $JWT"
+
+# GC + VACUUM — additionally rewrites the .db file compactly
+# Takes a few seconds; exclusively locks the database
+curl -X POST http://localhost:4040/api/maintenance/vacuum \
+     -H "Authorization: Bearer $JWT"
+```
 
 ---
 
 ## Security notes
 
-The Subsonic protocol predates modern auth. There are two facts worth
-internalising before exposing Muse to the open internet:
+1. **Subsonic authenticates every request with the user's password** —
+   either as plaintext `p=` or as an MD5 token+salt pair. Muse caches the
+   plaintext password **in memory only** after first login; nothing is
+   written to disk in cleartext.
+2. **Run behind HTTPS in production.** Without TLS, the password can be
+   read from any Subsonic request on the same network.
+3. The web UI stores your username and password in `localStorage` so
+   Subsonic calls can authenticate without re-prompting. Sign out from the
+   sidebar to wipe the credentials.
+4. Change the default `admin` / `admin` credentials before exposing to
+   a network.
+5. Set `jwt_secret` to a long random string. An empty or guessable secret
+   allows anyone to forge session tokens.
 
-1. **The protocol authenticates every call with the user's password**,
-   either as a query-string `p=...` or as `t=md5(password+salt) & s=salt`.
-   Either way, the server must be able to recover the plaintext password
-   to verify against its bcrypt hash. Muse caches plaintext **in memory
-   only**, after the first successful login. Nothing is written to disk
-   in cleartext.
+---
 
-2. **Run Muse behind HTTPS in production**, full stop. With a TLS
-   reverse proxy (nginx, Caddy, Traefik) the password never travels
-   in cleartext on the wire. Without it, an attacker on the same
-   network can sniff your password from a single Subsonic request.
+## Possible future work
 
-Other notes:
-
-- The web UI keeps your username and password in `localStorage` so
-  that subsequent Subsonic calls can authenticate without re-prompting.
-  This is roughly equivalent in threat-model terms to a session cookie.
-  Sign out from the sidebar to wipe it.
-- Set `jwt_secret` to a long random string. If it stays empty, Muse
-  generates one at startup, which means every restart logs everyone out.
-- Default credentials are `admin` / `admin`. Change them.
+- **Playlists** — full CRUD, shareable, Subsonic-synced across clients
+- **Starred / favourites** — per-user across the full Subsonic hierarchy
+- **Play counts and scrobbling** — Last.fm integration, internal play history
+- **Now-playing roster** — see what's streaming across all sessions
+- **User management** — add/remove users, role assignment from the web UI
+- **FTS5 full-text search** — fast fuzzy search at 500 k+ tracks without
+  table-scan LIKE queries
+- **On-the-fly cover art resizing** — serve thumbnails at the requested
+  `size` instead of always returning full resolution
+- **`getArtistInfo2`** — expose Last.fm artist data via the Subsonic
+  protocol (currently web-UI only)
+- **Cross-device play queue** — `getPlayQueue` / `savePlayQueue`
+- **Audiobook / podcast bookmarks**
+- **Docker image** — single-container deploy with ffmpeg bundled
+- **MusicBrainz metadata enrichment** — MBID lookup for canonical tags and
+  richer artist data
 
 ---
 
 ## Architecture
 
 ```
-                ┌─────────────────────────────────────────┐
-                │           FastAPI application           │
-                │                                         │
-   browsers ───▶│  /api/*       (web UI, JWT-bearer)      │
-                │  /rest/*      (Subsonic, password auth) │
-                └─────────────────────────────────────────┘
-                                  │
-                                  ▼
-                ┌─────────────────────────────────────────┐
-                │              Core services              │
-                │   library  ·  search  ·  auth           │
-                └─────────────────────────────────────────┘
-                                  │
-        ┌─────────────────┬───────┴────────┬─────────────────┐
-        ▼                 ▼                ▼                 ▼
-    Scanner          Streaming        SQLite (WAL)      Artwork cache
-  walker / parse    range + ffmpeg    indexed schema    sha1-named files
+                ┌──────────────────────────────────────────┐
+                │           FastAPI application            │
+                │                                          │
+   browsers ───▶│  /api/*    (web UI, JWT-bearer)          │
+   clients  ───▶│  /rest/*   (Subsonic, password auth)     │
+                └──────────────────────────────────────────┘
+                                   │
+                                   ▼
+                ┌──────────────────────────────────────────┐
+                │             Core services                │
+                │   library  ·  search  ·  auth  ·  lastfm │
+                └──────────────────────────────────────────┘
+                                   │
+         ┌──────────────┬──────────┴──────────┬────────────────┐
+         ▼              ▼                     ▼                ▼
+     Scanner        Streaming            SQLite (WAL)    Artwork cache
+   walk/parse    range + ffmpeg       indexed schema   sha1-named files
 ```
 
 Key design decisions:
 
-- **SQLite, not Postgres.** Personal music libraries don't need
-  multi-master writes; SQLite in WAL mode handles concurrent readers
-  during scan writes. `cache_size = -50000` gives us ~200 MB of page
-  cache, which keeps a 500k-track library hot.
-- **Custom SQL layer over SQLAlchemy.** Predictable query shapes,
-  no ORM overhead on the hot paths (browse/search), no surprise N+1s.
-- **Subsonic id prefixes.** Artists are `ar-N`, albums `al-N`, tracks
-  `tr-N`. Opaque to clients but typed for us — stops the whole class of
-  "I passed an album id where I needed an artist id" bugs.
-- **Streaming via subprocess pipe.** Transcoded audio is read out of
-  ffmpeg's stdout in 64 KB chunks; no full file is ever held in memory,
-  and disconnect-mid-stream cleanly terminates the encoder.
-- **Hash-named artwork cache.** Files are named by `sha1(bytes)[:16].ext`
-  so identical art across 50 albums is stored once.
-- **Both `/rest/X` and `/rest/X.view`** are registered, because some
-  legacy Subsonic clients hard-code one form or the other.
+- **SQLite over Postgres.** WAL mode handles concurrent readers during scan
+  writes. `cache_size = -50000` keeps ~200 MB of pages hot. No daemon, no
+  separate process, trivial backups.
+- **Hand-written SQL over ORM.** Every query is in `db/queries.py`, visible
+  and optimisable. No N+1 surprises, no migration-framework overhead.
+- **Prefixed Subsonic IDs.** `ar-N` / `al-N` / `tr-N` — opaque to clients,
+  typed for the server. Eliminates a whole class of wrong-type ID bugs.
+- **Streaming via subprocess pipe.** Transcoded audio flows directly from
+  ffmpeg's stdout in 64 KB chunks. No full file in memory; a disconnection
+  mid-stream terminates the encoder immediately.
+- **Hash-named artwork cache.** Art is stored as `sha1(bytes)[:16].ext`.
+  Identical artwork shared across many albums is stored once.
+- **Both `/rest/X` and `/rest/X.view`** are registered; legacy clients
+  hard-code one form or the other.
 
 ---
 
@@ -259,40 +335,49 @@ muse-server/
 ├── backend/
 │   ├── main.py              # FastAPI app, lifespan, CORS, routers
 │   ├── config/              # Pydantic Settings + YAML loader
-│   ├── api/                 # HTTP layer
-│   │   ├── subsonic.py      #   /rest/* — Subsonic-compatible router
-│   │   ├── web.py           #   /api/*  — internal web UI router
-│   │   ├── responses.py     #   Subsonic envelope (json/xml/jsonp)
-│   │   └── deps.py          #   FastAPI dependencies (auth, ctx)
-│   ├── core/                # Domain logic
-│   │   ├── auth.py          #   bcrypt, JWT, Subsonic token+salt
-│   │   ├── library.py       #   id helpers, Subsonic shape mappers
-│   │   └── search.py
-│   ├── db/                  # SQLite layer
-│   │   ├── schema.sql       #   Versioned schema
-│   │   ├── connection.py    #   Thread-local connections
-│   │   ├── migrations.py    #   Versioned migrations
-│   │   └── queries.py       #   All hand-written SQL
-│   ├── scanner/             # Library scan
-│   │   ├── walker.py        #   os.scandir-based walker
-│   │   ├── metadata.py      #   mutagen → ffprobe → filename
-│   │   ├── artwork.py       #   embedded + folder-art extraction
-│   │   └── scanner.py       #   orchestration, progress, threads
-│   └── streaming/           # Audio streaming
-│       ├── presets.py       #   transcode preset table
-│       ├── transcoder.py    #   ffmpeg subprocess pipe
-│       └── streamer.py      #   range-aware streamer
+│   ├── api/
+│   │   ├── subsonic.py      # /rest/* — Subsonic-compatible router
+│   │   ├── web.py           # /api/*  — internal web UI router
+│   │   ├── responses.py     # Subsonic envelope (json / xml / jsonp)
+│   │   └── deps.py          # FastAPI dependencies (auth context)
+│   ├── core/
+│   │   ├── auth.py          # bcrypt, JWT, Subsonic token+salt
+│   │   ├── library.py       # ID helpers, Subsonic shape builders
+│   │   ├── search.py        # search3 business logic
+│   │   └── lastfm.py        # Last.fm artist bio + image fetcher
+│   ├── db/
+│   │   ├── schema.sql       # Table definitions and indexes
+│   │   ├── connection.py    # Thread-local SQLite connections
+│   │   ├── migrations.py    # Versioned schema migrations
+│   │   ├── queries.py       # All hand-written SQL
+│   │   └── maintenance.py   # GC, VACUUM, WAL checkpoint
+│   ├── scanner/
+│   │   ├── walker.py        # os.scandir-based directory walker
+│   │   ├── metadata.py      # mutagen → ffprobe → filename pipeline
+│   │   ├── artwork.py       # Embedded + folder-art extraction
+│   │   └── scanner.py       # Orchestration, progress, thread pool
+│   └── streaming/
+│       ├── presets.py       # Transcode preset table
+│       ├── transcoder.py    # FFmpeg subprocess pipe
+│       └── streamer.py      # Range-aware HTTP streamer
 ├── frontend/
+│   ├── src/
+│   │   ├── main.ts          # Hash router, shell, player mount
+│   │   ├── api.ts           # Subsonic + JWT API clients
+│   │   ├── auth.ts          # Login state (localStorage)
+│   │   ├── player.ts        # HTML5 audio, queue, dock rendering
+│   │   ├── style.css        # Editorial-zine aesthetic
+│   │   └── views/
+│   │       ├── library.ts   # A–Z index (list + grid mode)
+│   │       ├── albums.ts    # Album grid with pagination
+│   │       ├── album.ts     # Single album tracklist
+│   │       ├── artist.ts    # Artist page with bio
+│   │       ├── search.ts    # Search results with load-more
+│   │       ├── track.ts     # Track detail
+│   │       ├── settings.ts  # Workshop / admin panel
+│   │       └── _util.ts     # Shared helpers
 │   ├── package.json
-│   ├── vite.config.ts
-│   ├── index.html
-│   └── src/
-│       ├── main.ts          # Hash router, shell, mounts player
-│       ├── api.ts           # Subsonic + JWT clients
-│       ├── auth.ts          # Login state
-│       ├── player.ts        # HTML5 audio + queue + dock
-│       ├── style.css        # Editorial-zine aesthetic
-│       └── views/           # login, library, albums, album, artist, search, settings
+│   └── vite.config.ts
 └── config.example.yaml
 ```
 
@@ -300,5 +385,5 @@ muse-server/
 
 ## License
 
-Your project, your license. (Recommendation: AGPL-3.0 if you intend to
-distribute, MIT for personal use.)
+Your project, your license. AGPL-3.0 if you intend to distribute; MIT for
+personal use.
