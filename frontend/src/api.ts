@@ -10,44 +10,152 @@
 //
 // WHY we keep the user's plaintext password in localStorage (not just the JWT):
 //   The Subsonic protocol authenticates every call with EITHER `p=password`
-//   OR `t=md5(password+salt) & s=salt`. Both require the server to be able
-//   to recover the user's password to verify. Our backend caches plaintext
-//   in memory after a successful /api/auth/login, but if the user reloads
-//   the SPA we need to be able to re-authenticate Subsonic calls without
-//   forcing a fresh login. So we keep the password client-side under a key
-//   that is wiped on signout. This is a known Subsonic constraint, not an
-//   invention of ours; documented in README "security notes".
+//   OR `t=md5(password+salt) & s=salt`. Both require knowing the password so
+//   the server can verify. Our backend caches the plaintext in memory after a
+//   successful /api/auth/login. We keep it client-side so we can silently
+//   re-warm that cache after a server restart without forcing a manual re-login.
+//   This is a known Subsonic constraint; documented in README "security notes".
 
 import { authState, signOut } from "./auth";
+
+/* ---------- MD5 (required by Subsonic token+salt auth) ----------
+ *
+ * The Subsonic spec requires t = md5(password + salt). The Web Crypto API
+ * doesn't support MD5 (it's cryptographically broken), so we implement it
+ * inline. This is the standard RFC 1321 algorithm — the constants are
+ * derived as floor(abs(sin(i)) * 2^32) for i = 1..64.
+ */
+function _md5(str: string): string {
+  const add = (x: number, y: number): number => {
+    const l = (x & 0xffff) + (y & 0xffff);
+    return ((((x >> 16) + (y >> 16) + (l >> 16)) << 16) | (l & 0xffff));
+  };
+  const rol = (n: number, s: number): number => (n << s) | (n >>> (32 - s));
+  const cmn = (q: number, a: number, b: number, x: number, s: number, t: number): number =>
+    add(rol(add(add(a, q), add(x, t)), s), b);
+  const ff = (a: number, b: number, c: number, d: number, x: number, s: number, t: number) =>
+    cmn((b & c) | (~b & d), a, b, x, s, t);
+  const gg = (a: number, b: number, c: number, d: number, x: number, s: number, t: number) =>
+    cmn((b & d) | (c & ~d), a, b, x, s, t);
+  const hh = (a: number, b: number, c: number, d: number, x: number, s: number, t: number) =>
+    cmn(b ^ c ^ d, a, b, x, s, t);
+  const ii = (a: number, b: number, c: number, d: number, x: number, s: number, t: number) =>
+    cmn(c ^ (b | ~d), a, b, x, s, t);
+
+  const bytes = new TextEncoder().encode(str);
+  const len = bytes.length;
+  const words = new Array<number>(((len + 72) >> 6) << 4).fill(0);
+  for (let i = 0; i < len; i++) words[i >> 2] |= bytes[i] << ((i & 3) * 8);
+  words[len >> 2] |= 0x80 << ((len & 3) * 8);
+  words[words.length - 2] = len * 8;
+
+  let [a, b, c, d] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+
+  for (let i = 0; i < words.length; i += 16) {
+    const [A, B, C, D] = [a, b, c, d];
+    const w = (k: number) => words[i + k];
+
+    a=ff(a,b,c,d,w(0), 7,-680876936);  b=ff(b,c,d,a,w(1), 12,-389564586);
+    c=ff(c,d,a,b,w(2), 17, 606105819); d=ff(d,a,b,c,w(3), 22,-1044525330);
+    a=ff(a,b,c,d,w(4), 7,-176418897);  b=ff(b,c,d,a,w(5), 12,1200080426);
+    c=ff(c,d,a,b,w(6), 17,-1473231341);d=ff(d,a,b,c,w(7), 22,-45705983);
+    a=ff(a,b,c,d,w(8), 7,1770035416); b=ff(b,c,d,a,w(9), 12,-1958414417);
+    c=ff(c,d,a,b,w(10),17,-42063);    d=ff(d,a,b,c,w(11),22,-1990404162);
+    a=ff(a,b,c,d,w(12),7,1804603682); b=ff(b,c,d,a,w(13),12,-40341101);
+    c=ff(c,d,a,b,w(14),17,-1502002290);d=ff(d,a,b,c,w(15),22,1236535329);
+
+    a=gg(a,b,c,d,w(1), 5,-165796510);  b=gg(b,c,d,a,w(6), 9,-1069501632);
+    c=gg(c,d,a,b,w(11),14,643717713);  d=gg(d,a,b,c,w(0), 20,-373897302);
+    a=gg(a,b,c,d,w(5), 5,-701558691);  b=gg(b,c,d,a,w(10),9,38016083);
+    c=gg(c,d,a,b,w(15),14,-660478335); d=gg(d,a,b,c,w(4), 20,-405537848);
+    a=gg(a,b,c,d,w(9), 5,568446438);   b=gg(b,c,d,a,w(14),9,-1019803690);
+    c=gg(c,d,a,b,w(3), 14,-187363961); d=gg(d,a,b,c,w(8), 20,1163531501);
+    a=gg(a,b,c,d,w(13),5,-1444681467); b=gg(b,c,d,a,w(2), 9,-51403784);
+    c=gg(c,d,a,b,w(7), 14,1735328473); d=gg(d,a,b,c,w(12),20,-1926607734);
+
+    a=hh(a,b,c,d,w(5), 4,-378558);     b=hh(b,c,d,a,w(8), 11,-2022574463);
+    c=hh(c,d,a,b,w(11),16,1839030562); d=hh(d,a,b,c,w(14),23,-35309556);
+    a=hh(a,b,c,d,w(1), 4,-1530992060); b=hh(b,c,d,a,w(4), 11,1272893353);
+    c=hh(c,d,a,b,w(7), 16,-155497632); d=hh(d,a,b,c,w(10),23,-1094730640);
+    a=hh(a,b,c,d,w(13),4,681279174);   b=hh(b,c,d,a,w(0), 11,-358537222);
+    c=hh(c,d,a,b,w(3), 16,-722521979); d=hh(d,a,b,c,w(6), 23,76029189);
+    a=hh(a,b,c,d,w(9), 4,-640364487);  b=hh(b,c,d,a,w(12),11,-421815835);
+    c=hh(c,d,a,b,w(15),16,530742520);  d=hh(d,a,b,c,w(2), 23,-995338651);
+
+    a=ii(a,b,c,d,w(0), 6,-198630844);  b=ii(b,c,d,a,w(7), 10,1126891415);
+    c=ii(c,d,a,b,w(14),15,-1416354905);d=ii(d,a,b,c,w(5), 21,-57434055);
+    a=ii(a,b,c,d,w(12),6,1700485571);  b=ii(b,c,d,a,w(3), 10,-1894986606);
+    c=ii(c,d,a,b,w(10),15,-1051523);   d=ii(d,a,b,c,w(1), 21,-2054922799);
+    a=ii(a,b,c,d,w(8), 6,1873313359);  b=ii(b,c,d,a,w(15),10,-30611744);
+    c=ii(c,d,a,b,w(6), 15,-1560198380);d=ii(d,a,b,c,w(13),21,1309151649);
+    a=ii(a,b,c,d,w(4), 6,-145523070);  b=ii(b,c,d,a,w(11),10,-1120210379);
+    c=ii(c,d,a,b,w(2), 15,718787259);  d=ii(d,a,b,c,w(9), 21,-343485551);
+
+    [a, b, c, d] = [add(a, A), add(b, B), add(c, C), add(d, D)];
+  }
+
+  return [a, b, c, d]
+    .flatMap(v => [0, 8, 16, 24].map(s => ((v >> s) & 0xff).toString(16).padStart(2, "0")))
+    .join("");
+}
 
 /* ---------- low-level helpers ---------- */
 
 const SUBSONIC_CLIENT = "muse-web";
 const SUBSONIC_VERSION = "1.16.1";
 
-/** Build the auth query parameters required by every Subsonic request. */
+/**
+ * Build the auth query parameters required by every Subsonic request.
+ * Uses token+salt (t= / s=) rather than plaintext p= so the password
+ * never appears in URLs (browser history, server access logs, image src).
+ */
 function subsonicAuthParams(): URLSearchParams {
   const { username, password } = authState();
-  if (!username || !password) {
-    throw new Error("Not authenticated");
-  }
-  // We use plain `p=` rather than the token+salt scheme for simplicity.
-  // Both are equally secure when the connection is HTTPS; on plain HTTP
-  // neither is secure. See README "security notes".
-  const params = new URLSearchParams({
+  if (!username || !password) throw new Error("Not authenticated");
+
+  // Random 16-hex-char salt. Each request gets a different salt so the
+  // token also differs — replaying a captured URL doesn't work.
+  const salt = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+  const token = _md5(password + salt);
+
+  return new URLSearchParams({
     u: username,
-    p: password,
+    t: token,
+    s: salt,
     v: SUBSONIC_VERSION,
     c: SUBSONIC_CLIENT,
     f: "json",
   });
-  return params;
+}
+
+/**
+ * Re-warm the server's in-memory plaintext cache by posting credentials via
+ * the JSON /api/auth/login endpoint (POST body, never a URL query param).
+ * Returns true on success. Called automatically when token+salt auth fails,
+ * which happens after a server restart clears the cache.
+ */
+async function _rewarmCache(): Promise<boolean> {
+  const { username, password } = authState();
+  if (!username || !password) return false;
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Make a Subsonic-style request and unwrap the `subsonic-response` envelope. */
 export async function subsonic<T = unknown>(
   endpoint: string,
   extra: Record<string, string | number | undefined> = {},
+  _retry = true,
 ): Promise<T> {
   const params = subsonicAuthParams();
   for (const [k, v] of Object.entries(extra)) {
@@ -64,7 +172,17 @@ export async function subsonic<T = unknown>(
   const env = body["subsonic-response"];
   if (!env) throw new Error(`Malformed Subsonic response from ${endpoint}`);
   if (env.status === "failed") {
-    if (env.error?.code === 40 || env.error?.code === 41) signOut();
+    // Error 40 = wrong credentials. With token+salt auth this can happen if
+    // the server restarted and lost its in-memory plaintext cache. Try to
+    // re-warm the cache via a POST (password in body, never in a URL) and
+    // retry once. Only sign out if the retry also fails.
+    if ((env.error?.code === 40 || env.error?.code === 41) && _retry) {
+      const warmed = await _rewarmCache();
+      if (warmed) return subsonic<T>(endpoint, extra, false);
+      signOut();
+    } else if (env.error?.code === 40 || env.error?.code === 41) {
+      signOut();
+    }
     throw new Error(env.error?.message ?? `Subsonic error on ${endpoint}`);
   }
   return env as T;
