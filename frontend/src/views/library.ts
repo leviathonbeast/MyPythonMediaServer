@@ -3,8 +3,10 @@
 // The browse landing — an A–Z artist index built from /rest/getIndexes.
 // This is what you see when you click "Library" in the nav.
 
-import { getIndexes, type SubsonicIndex } from "../api";
+import { getIndexes, type SubsonicIndex, type SubsonicArtist } from "../api";
 import { escapeHtml } from "./_util";
+
+const BUCKET_LIMIT = 5;
 
 export async function renderLibrary(host: HTMLElement): Promise<void> {
   host.innerHTML = `
@@ -39,31 +41,60 @@ export async function renderLibrary(host: HTMLElement): Promise<void> {
     return;
   }
 
-  // Build buckets — each letter group becomes a column-like card.
-  const html = `
-    <div class="index-grid stagger">
-      ${buckets.map(bucket => {
-        const artists = bucket.artist ?? [];
-        return `
-          <section class="index-bucket">
-            <div class="head">
-              <span class="letter">${escapeHtml(bucket.name)}</span>
-              <span class="count">${artists.length} artist${artists.length === 1 ? "" : "s"}</span>
-            </div>
-            <ul>
-              ${artists.map(a => `
-                <li>
-                  <a href="#/artist/${encodeURIComponent(a.id)}">
-                    <span>${escapeHtml(a.name)}</span>
-                    <span class="albums">${a.albumCount ?? ""}</span>
-                  </a>
-                </li>
-              `).join("")}
-            </ul>
-          </section>
-        `;
-      }).join("")}
-    </div>
+  const grid = document.createElement("div");
+  grid.className = "index-grid stagger";
+
+  for (const bucket of buckets) {
+    const artists = bucket.artist ?? [];
+    grid.appendChild(buildBucket(bucket.name, artists));
+  }
+
+  content.innerHTML = "";
+  content.appendChild(grid);
+}
+
+function artistRowHtml(a: SubsonicArtist): string {
+  return `<li><a href="#/artist/${encodeURIComponent(a.id)}">
+    <span>${escapeHtml(a.name)}</span>
+    <span class="albums">${a.albumCount ?? ""}</span>
+  </a></li>`;
+}
+
+function buildBucket(letter: string, artists: SubsonicArtist[]): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "index-bucket";
+
+  const head = document.createElement("div");
+  head.className = "head";
+  head.innerHTML = `
+    <span class="letter">${escapeHtml(letter)}</span>
+    <span class="count">${artists.length} artist${artists.length === 1 ? "" : "s"}</span>
   `;
-  content.innerHTML = html;
+  section.appendChild(head);
+
+  const ul = document.createElement("ul");
+  ul.innerHTML = artists.slice(0, BUCKET_LIMIT).map(artistRowHtml).join("");
+  section.appendChild(ul);
+
+  if (artists.length <= BUCKET_LIMIT) return section;
+
+  // Overflow list — hidden until the toggle is clicked.
+  const overflow = document.createElement("ul");
+  overflow.innerHTML = artists.slice(BUCKET_LIMIT).map(artistRowHtml).join("");
+  overflow.style.display = "none";
+  section.appendChild(overflow);
+
+  const remaining = artists.length - BUCKET_LIMIT;
+  const btn = document.createElement("button");
+  btn.className = "btn ghost bucket-more";
+  btn.textContent = `+${remaining} more`;
+
+  btn.addEventListener("click", () => {
+    const expanded = overflow.style.display !== "none";
+    overflow.style.display = expanded ? "none" : "";
+    btn.textContent = expanded ? `+${remaining} more` : "Show less";
+  });
+
+  section.appendChild(btn);
+  return section;
 }

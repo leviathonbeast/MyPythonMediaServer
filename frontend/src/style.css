@@ -460,6 +460,23 @@ a:hover { color: var(--accent); }
   font-size: var(--t-micro);
   color: var(--muted);
 }
+.bucket-more {
+  display: block;
+  width: 100%;
+  margin-top: var(--gap-2);
+  padding: var(--gap-1) 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: none;
+  border-top: 1px solid var(--rule);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+}
+.bucket-more:hover { color: var(--ink); }
 
 /* Album grid (cards) */
 .album-grid {
