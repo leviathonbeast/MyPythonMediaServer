@@ -84,12 +84,17 @@ def find_folder_artwork(track_path: str) -> Optional[bytes]:
         "front.jpg", "front.jpeg", "front.png",
         "album.jpg", "albumart.jpg",
     ]
+    try:
+        # Read directory once; build a lowercase-name → entry map so candidate
+        # lookups are O(1) instead of re-scanning the directory for each name.
+        entries = {e.name.lower(): e for e in folder.iterdir() if e.is_file()}
+    except OSError:
+        return None
     for name in candidates:
-        # Case-insensitive on Linux requires a manual check.
-        for entry in folder.iterdir() if folder.exists() else []:
-            if entry.name.lower() == name and entry.is_file():
-                try:
-                    return entry.read_bytes()
-                except OSError:
-                    return None
+        entry = entries.get(name)
+        if entry is not None:
+            try:
+                return entry.read_bytes()
+            except OSError:
+                return None
     return None

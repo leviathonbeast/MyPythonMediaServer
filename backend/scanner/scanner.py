@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.config import get_settings
-from backend.db import get_conn, transaction, queries
+from backend.db import get_conn, transaction, queries, init_thread_connection, _SCANNER_CACHE_PAGES
 from . import artwork, metadata
 from .walker import walk_audio_files
 
@@ -112,6 +112,10 @@ def scan_all_blocking() -> ScanProgress:
 
 def _run_scan() -> None:
     """Internal: drive the scan and release the lock when done."""
+    # Give this thread a larger SQLite page cache before any DB access.
+    # API threads share the smaller default; the scanner gets more because
+    # it reads every path, artist, and album row in the library.
+    init_thread_connection(_SCANNER_CACHE_PAGES)
     try:
         _run_scan_inner()
     finally:
@@ -305,10 +309,14 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                 queries.upsert_track(track_row)
 
                 # Cover art: store once per album (first track wins).
-                if rec.get("art_data") is not None:
-                    cover_id = artwork.store_artwork(rec["art_data"])
+                # Pop art_data immediately after writing — the bytes can be
+                # several MB per track and we don't need them past this point.
+                art_data = rec.pop("art_data", None)
+                if art_data is not None:
+                    cover_id = artwork.store_artwork(art_data)
                     if cover_id:
                         queries.set_album_cover_art(album_id, cover_id)
+                    del art_data
 
                 touched_albums.add(album_id)
                 touched_artists.add(album_artist_id)
@@ -329,7 +337,7 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                 for f in future_to_item:
                     f.cancel()
                 break
-            path, st, kind = future_to_item[fut]
+            path, st, kind = future_to_item.pop(fut)
             try:
                 rec = fut.result()
                 rec["_kind"] = kind

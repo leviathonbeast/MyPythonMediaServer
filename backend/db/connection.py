@@ -50,7 +50,11 @@ def init_db(settings: Settings) -> None:
     _db_path = str(db_path)
 
 
-def _new_connection() -> sqlite3.Connection:
+_DEFAULT_CACHE_PAGES = -30000   # ~120 MB — enough for hot API queries
+_SCANNER_CACHE_PAGES = -40000   # ~160 MB — ample for libraries up to ~150k tracks
+
+
+def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connection:
     """
     Open a fresh connection with the pragmas we always want.
 
@@ -64,9 +68,10 @@ def _new_connection() -> sqlite3.Connection:
     # foreign_keys must be set on every connection — it's not a database-level
     # setting in SQLite.
     conn.execute("PRAGMA foreign_keys = ON;")
-    # Bigger cache helps a lot for index lookups on a 100k-track library.
-    # 50000 pages * 4096 bytes = ~200MB. Adjust if you're memory-constrained.
-    conn.execute("PRAGMA cache_size = -50000;")
+    # Negative value = page count; SQLite page size is 4096 bytes.
+    # API threads use the default (120 MB); the scanner thread requests more
+    # via init_thread_connection() because it reads the entire library.
+    conn.execute(f"PRAGMA cache_size = {int(cache_pages)};")
     # busy_timeout means writers wait instead of immediately erroring on lock
     # contention. WAL mode minimises contention but doesn't eliminate it.
     conn.execute("PRAGMA busy_timeout = 5000;")
@@ -85,6 +90,21 @@ def get_conn() -> sqlite3.Connection:
         conn = _new_connection()
         _local.conn = conn
     return conn
+
+
+def init_thread_connection(cache_pages: int) -> None:
+    """
+    Open (or replace) this thread's connection with an explicit cache size.
+
+    Call this at the very start of any long-lived worker thread before the
+    first get_conn() use. The scanner thread calls it with _SCANNER_CACHE_PAGES
+    so it gets a larger cache without inflating every API thread's footprint.
+    Any existing connection for this thread is closed first.
+    """
+    existing = getattr(_local, "conn", None)
+    if existing is not None:
+        existing.close()
+    _local.conn = _new_connection(cache_pages=cache_pages)
 
 
 @contextmanager
