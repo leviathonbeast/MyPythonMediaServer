@@ -145,9 +145,11 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
     """
     rows = get_conn().execute(
         """
-        SELECT a.id, a.name, a.album_count, COALESCE(a.sort_name, a.name) AS sort_name
+        SELECT a.id, a.name, COUNT(al.id) AS album_count,
+               COALESCE(a.sort_name, a.name) AS sort_name
           FROM artists a
-         WHERE a.album_count > 0
+          JOIN albums al ON al.artist_id = a.id
+         GROUP BY a.id, a.name, a.sort_name
          ORDER BY sort_name COLLATE NOCASE
         """
     ).fetchall()
