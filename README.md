@@ -70,15 +70,15 @@ Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
 | `getMusicFolders` | All configured roots |
 | `getIndexes` | A–Z artist index; includes `coverArt` per artist |
 | `getMusicDirectory` | Artist and album directory traversal |
-| `getAlbum` | Album with full track list |
-| `getAlbumList` | All sort modes including random |
-| `getAlbumList2` | ID3 variant; same data shape |
+| `getAlbum` | Album with full track list; returns `name` + `artistId` (AlbumID3) |
+| `getAlbumList` | All sort modes including random; `byYear` filters by `fromYear`/`toYear`; `byGenre` filters by `genre` |
+| `getAlbumList2` | ID3 variant; same data shape as `getAlbumList` |
 | `getSong` | Single track by id |
 | `search3` | Artists / albums / tracks with server-side pagination (all six offset params) |
-| `stream` | Raw + transcoded, Range-aware |
+| `stream` | Raw + transcoded, Range-aware; `timeOffset` not supported |
 | `download` | Raw only (no transcode) |
-| `getCoverArt` | Serves from artwork cache; `size` accepted for compatibility |
-| `getUser` | Returns roles for requesting user (or any user if admin) |
+| `getCoverArt` | Serves from artwork cache; `size` accepted but not resized (full resolution always returned) |
+| `getUser` | Returns roles for requesting user (or any user if admin); `folder[]` not included |
 
 #### Stubs — valid empty responses, not yet implemented
 

@@ -134,9 +134,19 @@ def _album_to_directory_child(album: Dict[str, Any], artist_name: str) -> Dict[s
     }
 
 
-def list_albums(list_type: str, size: int, offset: int) -> List[Dict[str, Any]]:
+def list_albums(
+    list_type: str,
+    size: int,
+    offset: int,
+    from_year: Optional[int] = None,
+    to_year: Optional[int] = None,
+    genre: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """getAlbumList. Returns rendered Subsonic album dicts."""
-    rows = queries.list_albums(list_type=list_type, size=size, offset=offset)
+    rows = queries.list_albums(
+        list_type=list_type, size=size, offset=offset,
+        from_year=from_year, to_year=to_year, genre=genre,
+    )
     return [_album_to_directory_child(r, r["artist_name"]) for r in rows]
 
 
@@ -150,7 +160,10 @@ def get_album_with_tracks(album_id: str) -> Optional[Dict[str, Any]]:
     tracks = queries.list_album_tracks(rid)
     return {
         **_album_to_directory_child(album, album["artist_name"]),
-        "song": [track_to_subsonic(t) for t in tracks],
+        # AlbumID3 fields expected by ID3-mode clients (name + artistId).
+        "name":     album["name"],
+        "artistId": make_artist_id(album["artist_id"]) if album.get("artist_id") else None,
+        "song":     [track_to_subsonic(t) for t in tracks],
     }
 
 def get_song(song_id: str) -> Optional[Dict[str, any]]:

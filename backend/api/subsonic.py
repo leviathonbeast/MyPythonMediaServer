@@ -189,10 +189,12 @@ def get_album_list(
     type: str = Query(default="alphabeticalByName"),
     size: int = Query(default=10, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    fromYear: Optional[int] = Query(default=None),
+    toYear: Optional[int] = Query(default=None),
+    genre: Optional[str] = Query(default=None),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
-    albums = library.list_albums(type, size, offset)
-    # getAlbumList wraps in "albumList" -> { album: [...] }.
+    albums = library.list_albums(type, size, offset, from_year=fromYear, to_year=toYear, genre=genre)
     return responses.ok({"albumList": {"album": albums}}, fmt=ctx.fmt, callback=ctx.callback)
 
 
@@ -201,10 +203,13 @@ def get_album_list2(
     type: str = Query(default="alphabeticalByName"),
     size: int = Query(default=10, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    fromYear: Optional[int] = Query(default=None),
+    toYear: Optional[int] = Query(default=None),
+    genre: Optional[str] = Query(default=None),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """ID3-tag-based version of getAlbumList. Same data shape for our purposes."""
-    albums = library.list_albums(type, size, offset)
+    albums = library.list_albums(type, size, offset, from_year=fromYear, to_year=toYear, genre=genre)
     return responses.ok({"albumList2": {"album": albums}}, fmt=ctx.fmt, callback=ctx.callback)
 
 
@@ -295,6 +300,7 @@ def download(
 
 @_double_register("getCoverArt")
 def get_cover_art(
+    request: Request,
     id: str = Query(...),
     size: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, not implemented
     ctx: SubsonicContext = Depends(subsonic_context),
@@ -302,13 +308,23 @@ def get_cover_art(
     """
     Serve a cached cover art file by hash id. `size` is accepted for protocol
     compatibility; on-the-fly resizing is a TODO (would use Pillow).
+
+    The id is already a content hash, so the URL is immutable — we cache it
+    for a year and use the id as the ETag so browsers get 304s on revalidation.
     """
     path = artwork_module.find_artwork_path(id)
     if path is None:
         return responses.error(responses.ERR_NOT_FOUND, "Cover art not found", fmt=ctx.fmt, callback=ctx.callback)
+
+    etag = f'"{id}"'
+    cache_headers = {"Cache-Control": "public, max-age=31536000, immutable", "ETag": etag}
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
+
     suffix = path.suffix.lstrip(".").lower()
     media = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(suffix, "image/jpeg")
-    return Response(content=path.read_bytes(), media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+    return Response(content=path.read_bytes(), media_type=media, headers=cache_headers)
 
 
 # ===========================================================================
