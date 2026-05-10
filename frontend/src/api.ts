@@ -260,19 +260,33 @@ export async function getSong(id: string): Promise<SubsonicSong> {
   return result.song;
 }
 
-export async function search3(query: string): Promise<{
-  artist: SubsonicArtist[];
-  album: SubsonicAlbum[];
-  song: SubsonicSong[];
-}> {
+export async function search3(
+  query: string,
+  opts: {
+    artistCount?: number;
+    albumCount?: number;
+    songCount?: number;
+    artistOffset?: number;
+    albumOffset?: number;
+    songOffset?: number;
+  } = {},
+): Promise<{ artist: SubsonicArtist[]; album: SubsonicAlbum[]; song: SubsonicSong[] }> {
   const env = await subsonic<{
     searchResult3: { artist?: SubsonicArtist[]; album?: SubsonicAlbum[]; song?: SubsonicSong[] };
-  }>("search3", { query });
+  }>("search3", {
+    query,
+    artistCount: opts.artistCount ?? 20,
+    albumCount:  opts.albumCount  ?? 20,
+    songCount:   opts.songCount   ?? 20,
+    artistOffset: opts.artistOffset ?? 0,
+    albumOffset:  opts.albumOffset  ?? 0,
+    songOffset:   opts.songOffset   ?? 0,
+  });
   const r = env.searchResult3 ?? {};
   return {
     artist: r.artist ?? [],
-    album: r.album ?? [],
-    song: r.song ?? [],
+    album:  r.album  ?? [],
+    song:   r.song   ?? [],
   };
 }
 

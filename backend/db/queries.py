@@ -453,6 +453,9 @@ def search3(
     artist_count: int = 20,
     album_count: int = 20,
     song_count: int = 20,
+    artist_offset: int = 0,
+    album_offset: int = 0,
+    song_offset: int = 0,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
     Subsonic-style search. Returns artists, albums, songs that match.
@@ -466,8 +469,8 @@ def search3(
     conn = get_conn()
 
     artists = conn.execute(
-        "SELECT id, name, album_count FROM artists WHERE name LIKE ? COLLATE NOCASE LIMIT ?",
-        (pattern, artist_count),
+        "SELECT id, name, album_count FROM artists WHERE name LIKE ? COLLATE NOCASE LIMIT ? OFFSET ?",
+        (pattern, artist_count, artist_offset),
     ).fetchall()
 
     albums = conn.execute(
@@ -478,9 +481,9 @@ def search3(
           JOIN artists ar ON ar.id = al.artist_id
          WHERE al.name LIKE ? COLLATE NOCASE
             OR ar.name LIKE ? COLLATE NOCASE
-         LIMIT ?
+         LIMIT ? OFFSET ?
         """,
-        (pattern, pattern, album_count),
+        (pattern, pattern, album_count, album_offset),
     ).fetchall()
 
     songs = conn.execute(
@@ -495,9 +498,9 @@ def search3(
          WHERE t.title LIKE ? COLLATE NOCASE
             OR ar.name LIKE ? COLLATE NOCASE
             OR al.name LIKE ? COLLATE NOCASE
-         LIMIT ?
+         LIMIT ? OFFSET ?
         """,
-        (pattern, pattern, pattern, song_count),
+        (pattern, pattern, pattern, song_count, song_offset),
     ).fetchall()
 
     return {

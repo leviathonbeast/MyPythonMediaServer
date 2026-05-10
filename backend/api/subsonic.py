@@ -26,6 +26,8 @@ Phase 2 (placeholder stubs returning empty-but-valid responses):
     /rest/getNowPlaying
 
 Phase 3
+
+   
    /rest/getArtist
    /rest/getArtists
    /rest/getGenres
@@ -35,7 +37,7 @@ Phase 3
 
    /rest/getUser ?????
    /rest/changePassword 
-   
+
 
 Endpoints are registered for both `/rest/<name>` and `/rest/<name>.view` since
 many older clients append `.view` per the legacy Subsonic URL format.
@@ -170,16 +172,13 @@ def do_search3(
     artistCount: int = Query(default=20, ge=0, le=500),
     albumCount: int = Query(default=20, ge=0, le=500),
     songCount: int = Query(default=20, ge=0, le=500),
-    artistOffset: int = Query(default=0, ge=0),       # noqa: ARG001
-    albumOffset: int = Query(default=0, ge=0),        # noqa: ARG001
-    songOffset: int = Query(default=0, ge=0),         # noqa: ARG001
+    artistOffset: int = Query(default=0, ge=0),
+    albumOffset: int = Query(default=0, ge=0),
+    songOffset: int = Query(default=0, ge=0),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
-    """
-    Modern Subsonic search. We accept offset params but ignore them — when the
-    LIKE query is replaced with FTS5, offsets become trivial.
-    """
-    result = search.search3(query, artistCount, albumCount, songCount)
+    result = search.search3(query, artistCount, albumCount, songCount,
+                            artistOffset, albumOffset, songOffset)
     return responses.ok({"searchResult3": result}, fmt=ctx.fmt, callback=ctx.callback)
 
 

@@ -16,7 +16,10 @@ const SORT_LABELS: Record<SortMode, string> = {
   random: "Shuffle the shelf",
 };
 
+const PAGE_SIZE = 40;
+
 let currentSort: SortMode = "newest";
+let currentOffset = 0;
 
 export async function renderAlbums(host: HTMLElement): Promise<void> {
   host.innerHTML = `
@@ -46,30 +49,60 @@ export async function renderAlbums(host: HTMLElement): Promise<void> {
   sortEl.addEventListener("change", async () => {
     currentSort = sortEl.value as SortMode;
     sortLabel.textContent = SORT_LABELS[currentSort];
-    await load(grid);
+    currentOffset = 0;
+    await load(grid, true);
   });
 
-  await load(grid);
+  currentOffset = 0;
+  await load(grid, true);
 }
 
-async function load(grid: HTMLElement): Promise<void> {
-  grid.innerHTML = `<div class="loading">Loading albums</div>`;
+async function load(grid: HTMLElement, replace: boolean): Promise<void> {
+  if (replace) {
+    grid.innerHTML = `<div class="loading">Loading albums</div>`;
+  } else {
+    const btn = grid.querySelector<HTMLButtonElement>("[data-load-more]");
+    if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+  }
+
   let albums: SubsonicAlbum[];
   try {
-    albums = await getAlbumList(currentSort, 60);
+    albums = await getAlbumList(currentSort, PAGE_SIZE, currentOffset);
   } catch (e) {
-    grid.innerHTML = `<div class="empty">${escapeHtml((e as Error).message)}</div>`;
+    if (replace) grid.innerHTML = `<div class="empty">${escapeHtml((e as Error).message)}</div>`;
+    else {
+      const btn = grid.querySelector<HTMLButtonElement>("[data-load-more]");
+      if (btn) { btn.disabled = false; btn.textContent = "Load more"; }
+    }
     return;
   }
-  if (albums.length === 0) {
+
+  if (replace && albums.length === 0) {
     grid.innerHTML = `<div class="empty">No albums yet — scan your library to populate it.</div>`;
     return;
   }
-  grid.innerHTML = `
-    <div class="album-grid stagger">
-      ${albums.map(a => albumCardHtml(a)).join("")}
-    </div>
-  `;
+
+  currentOffset += albums.length;
+  const hasMore = albums.length === PAGE_SIZE;
+
+  if (replace) {
+    grid.innerHTML = `<div class="album-grid stagger" data-cards></div>`;
+  } else {
+    grid.querySelector("[data-load-more]")?.remove();
+  }
+
+  const cards = grid.querySelector<HTMLElement>("[data-cards]")!;
+  cards.insertAdjacentHTML("beforeend", albums.map(albumCardHtml).join(""));
+
+  if (hasMore) {
+    const btn = document.createElement("button");
+    btn.className = "btn ghost";
+    btn.dataset.loadMore = "";
+    btn.style.cssText = "display:block;margin:2rem auto;padding:.6rem 2rem";
+    btn.textContent = "Load more";
+    btn.addEventListener("click", () => void load(grid, false));
+    grid.appendChild(btn);
+  }
 }
 
 export function albumCardHtml(a: SubsonicAlbum): string {

@@ -21,9 +21,18 @@ from backend.db import queries
 from .library import make_album_id, make_artist_id, track_to_subsonic
 
 
-def search3(query: str, artist_count: int, album_count: int, song_count: int) -> Dict[str, Any]:
+def search3(
+    query: str,
+    artist_count: int,
+    album_count: int,
+    song_count: int,
+    artist_offset: int = 0,
+    album_offset: int = 0,
+    song_offset: int = 0,
+) -> Dict[str, Any]:
     """Return a Subsonic-shaped search result."""
-    raw = queries.search3(query, artist_count, album_count, song_count)
+    raw = queries.search3(query, artist_count, album_count, song_count,
+                          artist_offset, album_offset, song_offset)
 
     artists = [
         {"id": make_artist_id(a["id"]), "name": a["name"], "albumCount": a["album_count"]}
