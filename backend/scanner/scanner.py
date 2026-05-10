@@ -385,9 +385,14 @@ def _parse_one(path: str, st, folder_id: int) -> Dict[str, Any]:
     """
     Extract metadata for a single file. Runs in a worker thread.
 
-    Returns a dict with the fields the scanner needs. Underscored keys (_artist,
-    _album, _album_artist) carry the raw names; the main thread resolves them
-    to ids.
+    This function is called by ThreadPoolExecutor — potentially dozens of times
+    in parallel. Because it only reads files (no DB writes), it's safe to run
+    concurrently.
+
+    Returns a dict with the fields the scanner needs. Keys prefixed with _
+    (like _artist, _album) carry raw name strings. The main thread is the only
+    one that converts those names to database IDs via upsert_artist/upsert_album,
+    because SQLite only allows one writer at a time.
     """
     meta = metadata.extract(path)
 

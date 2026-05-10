@@ -541,29 +541,185 @@ def search3(
 # Users (auth)
 # ---------------------------------------------------------------------------
 
-def create_user(username: str, password_hash: str, is_admin: bool = False) -> int:
+# The role columns live in a tuple so we can build SELECT lists programmatically.
+# This avoids typos and means adding a new column only requires one edit here.
+_USER_ROLE_COLS = (
+    "email", "scrobbling_enabled", "max_bit_rate",
+    "settings_role", "stream_role", "download_role", "upload_role",
+    "playlist_role", "cover_art_role", "comment_role", "podcast_role",
+    "jukebox_role", "share_role", "video_conversion_role",
+)
+
+# Full user row including password_hash — only for auth/login paths.
+_USER_SELECT = (
+    "id, username, password_hash, is_admin, created_at, "
+    + ", ".join(_USER_ROLE_COLS)
+)
+
+# Same but without password_hash — safe to return to the API layer / admin UI.
+# We never send hashes to the frontend.
+_USER_SELECT_NO_HASH = (
+    "id, username, is_admin, created_at, "
+    + ", ".join(_USER_ROLE_COLS)
+)
+
+
+def create_user(
+    username: str,
+    password_hash: str,
+    is_admin: bool = False,
+    email: Optional[str] = None,
+    scrobbling_enabled: bool = False,
+    max_bit_rate: int = 0,
+    settings_role: bool = True,
+    stream_role: bool = True,
+    download_role: bool = False,
+    upload_role: bool = False,
+    playlist_role: bool = True,
+    cover_art_role: bool = False,
+    comment_role: bool = False,
+    podcast_role: bool = False,
+    jukebox_role: bool = False,
+    share_role: bool = False,
+    video_conversion_role: bool = False,
+) -> int:
     """Insert a new user. Raises sqlite3.IntegrityError if username is taken."""
     now = int(time.time())
     cur = get_conn().execute(
-        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
-        (username, password_hash, int(is_admin), now),
+        """
+        INSERT INTO users (
+            username, password_hash, is_admin, created_at,
+            email, scrobbling_enabled, max_bit_rate,
+            settings_role, stream_role, download_role, upload_role,
+            playlist_role, cover_art_role, comment_role, podcast_role,
+            jukebox_role, share_role, video_conversion_role
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            username, password_hash, int(is_admin), now,
+            email, int(scrobbling_enabled), max_bit_rate,
+            int(settings_role), int(stream_role), int(download_role), int(upload_role),
+            int(playlist_role), int(cover_art_role), int(comment_role), int(podcast_role),
+            int(jukebox_role), int(share_role), int(video_conversion_role),
+        ),
     )
     return cur.lastrowid
 
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     row = get_conn().execute(
-        "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
-        (username,),
+        f"SELECT {_USER_SELECT} FROM users WHERE username = ?", (username,)
     ).fetchone()
     return _row_to_dict(row)
 
 
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     row = get_conn().execute(
-        "SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,)
+        f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = ?", (user_id,)
     ).fetchone()
     return _row_to_dict(row)
+
+
+def list_users() -> List[Dict[str, Any]]:
+    """All users without password_hash, ordered by username."""
+    rows = get_conn().execute(
+        f"SELECT {_USER_SELECT_NO_HASH} FROM users ORDER BY username COLLATE NOCASE"
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def update_user(
+    username: str,
+    # The * below means every argument after it MUST be passed as a keyword
+    # argument (e.g. update_user("alice", download_role=True)), not positionally.
+    # This protects against accidentally passing the wrong value to the wrong field.
+    *,
+    password_hash: Optional[str] = None,
+    email: Optional[str] = None,
+    is_admin: Optional[bool] = None,
+    scrobbling_enabled: Optional[bool] = None,
+    max_bit_rate: Optional[int] = None,
+    settings_role: Optional[bool] = None,
+    stream_role: Optional[bool] = None,
+    download_role: Optional[bool] = None,
+    upload_role: Optional[bool] = None,
+    playlist_role: Optional[bool] = None,
+    cover_art_role: Optional[bool] = None,
+    comment_role: Optional[bool] = None,
+    podcast_role: Optional[bool] = None,
+    jukebox_role: Optional[bool] = None,
+    share_role: Optional[bool] = None,
+    video_conversion_role: Optional[bool] = None,
+) -> bool:
+    """Update any subset of user fields by username. Returns True if found."""
+    # Build the SET clause dynamically — only include fields the caller actually
+    # supplied. A None value means "leave this column alone". This lets you call
+    # update_user("alice", download_role=True) to flip one role without touching
+    # anything else, without needing 16 separate update functions.
+    fields: List[str] = []
+    params: List[Any] = []
+
+    def _add(col: str, val: Any, cast=None) -> None:
+        """Append 'col = ?' to fields and the value to params, if val is not None."""
+        if val is None:
+            return
+        fields.append(f"{col} = ?")
+        # cast converts Python bool to int (SQLite stores booleans as 0/1).
+        params.append(cast(val) if cast else val)
+
+    _add("password_hash",        password_hash)
+    _add("email",                email)
+    _add("is_admin",             is_admin,             cast=int)
+    _add("scrobbling_enabled",   scrobbling_enabled,   cast=int)
+    _add("max_bit_rate",         max_bit_rate)
+    _add("settings_role",        settings_role,        cast=int)
+    _add("stream_role",          stream_role,          cast=int)
+    _add("download_role",        download_role,        cast=int)
+    _add("upload_role",          upload_role,          cast=int)
+    _add("playlist_role",        playlist_role,        cast=int)
+    _add("cover_art_role",       cover_art_role,       cast=int)
+    _add("comment_role",         comment_role,         cast=int)
+    _add("podcast_role",         podcast_role,         cast=int)
+    _add("jukebox_role",         jukebox_role,         cast=int)
+    _add("share_role",           share_role,           cast=int)
+    _add("video_conversion_role", video_conversion_role, cast=int)
+
+    if not fields:
+        return bool(get_user_by_username(username))
+
+    params.append(username)
+    cur = get_conn().execute(
+        f"UPDATE users SET {', '.join(fields)} WHERE username = ?", params
+    )
+    return cur.rowcount > 0
+
+
+def update_user_password(user_id: int, password_hash: str) -> bool:
+    """Replace the stored password hash by id. Returns True if the user existed."""
+    cur = get_conn().execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
+    )
+    return cur.rowcount > 0
+
+
+def set_user_admin(user_id: int, is_admin: bool) -> bool:
+    """Set or clear the admin flag by id. Returns True if the user existed."""
+    cur = get_conn().execute(
+        "UPDATE users SET is_admin = ? WHERE id = ?", (int(is_admin), user_id)
+    )
+    return cur.rowcount > 0
+
+
+def delete_user(user_id: int) -> bool:
+    """Remove a user by id. Returns True if a row was deleted."""
+    cur = get_conn().execute("DELETE FROM users WHERE id = ?", (user_id,))
+    return cur.rowcount > 0
+
+
+def delete_user_by_username(username: str) -> bool:
+    """Remove a user by username. Returns True if a row was deleted."""
+    cur = get_conn().execute("DELETE FROM users WHERE username = ?", (username,))
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

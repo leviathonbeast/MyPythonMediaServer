@@ -73,6 +73,39 @@ def _migration_003_seed_music_folders(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_005_user_roles(conn: sqlite3.Connection) -> None:
+    """
+    Add Subsonic/OpenSubsonic user-role and preference columns.
+
+    Defaults follow the Subsonic 1.16.1 spec:
+      streamRole / settingsRole / playlistRole — true for all users
+      All other roles — false (admin grants them explicitly)
+    We use try/except per column so the migration is re-runnable if a
+    previous partial run left some columns in place.
+    """
+    columns = [
+        ("email",                 "TEXT"),
+        ("scrobbling_enabled",    "INTEGER NOT NULL DEFAULT 0"),
+        ("max_bit_rate",          "INTEGER NOT NULL DEFAULT 0"),
+        ("settings_role",         "INTEGER NOT NULL DEFAULT 1"),
+        ("stream_role",           "INTEGER NOT NULL DEFAULT 1"),
+        ("download_role",         "INTEGER NOT NULL DEFAULT 0"),
+        ("upload_role",           "INTEGER NOT NULL DEFAULT 0"),
+        ("playlist_role",         "INTEGER NOT NULL DEFAULT 1"),
+        ("cover_art_role",        "INTEGER NOT NULL DEFAULT 0"),
+        ("comment_role",          "INTEGER NOT NULL DEFAULT 0"),
+        ("podcast_role",          "INTEGER NOT NULL DEFAULT 0"),
+        ("jukebox_role",          "INTEGER NOT NULL DEFAULT 0"),
+        ("share_role",            "INTEGER NOT NULL DEFAULT 0"),
+        ("video_conversion_role", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col_name, col_def in columns:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass  # column already present — idempotent
+
+
 def _migration_004_album_release_type(conn: sqlite3.Connection) -> None:
     """Add `release_type` column to albums.
 
@@ -98,6 +131,7 @@ MIGRATIONS: List[Migration] = [
     (2, _migration_002_seed_admin),
     (3, _migration_003_seed_music_folders),
     (4, _migration_004_album_release_type),
+    (5, _migration_005_user_roles),
 ]
 
 

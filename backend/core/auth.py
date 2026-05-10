@@ -32,10 +32,19 @@ from jose import JWTError, jwt
 from backend.config import get_settings
 from backend.db import queries
 
-# Tiny in-process cache of (username, password) -> (user_dict, expires_at).
-# Keeps the per-request Subsonic auth path from doing bcrypt every time.
+# In-process cache: (username, plaintext_password) → (user_dict, expiry_timestamp).
+#
+# WHY: bcrypt is intentionally slow (that's the point — it makes brute-force
+# attacks expensive). But Subsonic clients authenticate on EVERY request, so
+# without a cache you'd spend ~100ms per API call just on password hashing.
+# Instead: the first time we see a (username, password) pair we run bcrypt and
+# cache the result for 60 seconds. Subsequent requests for the same pair return
+# instantly. Cache keys expire so a password change takes effect within a minute.
+#
+# SECURITY: The cache lives in memory only and never touches disk. If the server
+# restarts the cache is empty and the next request re-runs bcrypt normally.
 _verify_cache: Dict[Tuple[str, str], Tuple[Dict[str, Any], float]] = {}
-_CACHE_TTL = 60.0  # seconds
+_CACHE_TTL = 60.0  # seconds before a cached verification expires
 
 
 # ---------------------------------------------------------------------------
@@ -179,8 +188,15 @@ def _verify_with_token(username: str, token: str, salt: str) -> Optional[Dict[st
     return {"id": user["id"], "username": user["username"], "is_admin": bool(user["is_admin"])}
 
 
-# Username -> last known plaintext password (in-memory only). Populated when
-# a user authenticates via the password path; consumed by the token+salt path.
+# Username → the last known PLAINTEXT password, kept in memory only.
+#
+# This exists solely to support the Subsonic token+salt auth flow. When a
+# client sends ?t=<md5>&s=<salt>, we need to recompute md5(password+salt)
+# and compare. But the DB stores only the bcrypt hash — you can't reverse it.
+# Solution: when a user logs in via the password path (either through the web
+# UI or via ?p=...), we cache their plaintext here. The token path then uses
+# this cache to verify the MD5 token. If the cache is empty (e.g. server restart),
+# the client's first request must use the password path (?p=...) to warm it up.
 _last_plaintext: Dict[str, str] = {}
 
 

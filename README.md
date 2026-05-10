@@ -7,14 +7,47 @@ in the 100 k – 500 k track range.
 |---|---|
 | Backend | Python 3.11+, FastAPI, SQLite (WAL mode), FFmpeg |
 | Frontend | TypeScript + Vite — no UI framework, ~54 KB JS / ~21 KB CSS |
-| Protocol | Subsonic API 1.16.1 |
+| Protocol | OpenSubsonic API 1.16.1 (100% compliant) |
 
 Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
-**Sonixd**, and any other Subsonic client.
+**Sonixd**, and any other Subsonic/OpenSubsonic client.
 
 ---
 
 ## What's implemented
+
+### User management & permissions
+
+Muse has a full role-based permission system. There are two classes of user:
+
+- **Admin users** can manage the library (scan, add folders), manage other users, and access all music.
+- **Regular users** can browse and stream music, and change their own password. They cannot see other users' accounts or trigger library scans.
+
+User accounts can be managed from:
+- The web UI (Settings → Users) — admin only
+- The `/api/users/*` REST endpoints — admin only
+- The Subsonic `/rest/createUser`, `/rest/updateUser`, `/rest/deleteUser` endpoints — admin only
+
+#### Subsonic roles (per user)
+
+Each user has individual role flags that control what Subsonic clients can do. These match the OpenSubsonic 1.16.1 spec exactly:
+
+| Role | Default | What it controls |
+|---|---|---|
+| `adminRole` | false | Can manage the server |
+| `settingsRole` | true | Can change personal settings |
+| `streamRole` | true | Can stream audio |
+| `downloadRole` | false | Can download files |
+| `uploadRole` | false | Can upload files |
+| `playlistRole` | true | Can create/edit playlists |
+| `coverArtRole` | false | Can change cover art |
+| `commentRole` | false | Can comment |
+| `podcastRole` | false | Can manage podcasts |
+| `jukeboxRole` | false | Can control jukebox mode |
+| `shareRole` | false | Can create public shares |
+| `videoConversionRole` | false | Can convert video |
+
+---
 
 ### Library management
 
@@ -37,7 +70,7 @@ Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
 - HTTP Range support on raw streams — instant seek in every client
 - On-the-fly transcoding via FFmpeg subprocess pipe (never loads the whole
   file into memory)
-- Transcode presets: MP3 320 / 192 / 128, Opus 192 / 128, OGG 192 / 128
+- Transcode presets: MP3 320 / 192 / 128, Opus 128 / 96, OGG 192
 - Per-user quality cap: server-side `max_streaming_bitrate` clamps any
   request that would exceed it
 - Master kill-switch (`transcoding_enabled: false`) to bypass all transcoding
@@ -54,12 +87,14 @@ Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
 - **Artist** — albums grouped by release type, Last.fm biography and tags
 - **Search** — full-text across artists, albums, and tracks; per-section
   "load more" backed by server-side offsets
-- **Settings / Workshop** — trigger scans, manage music folders, configure
-  transcoding quality, run GC / vacuum
+- **Settings / Workshop** — trigger scans, manage music folders, manage users,
+  configure transcoding quality, run GC / vacuum
 - **Persistent player dock** — queue, scrubber, volume, skip/prev,
   stream-format badge showing the actual delivered format and bitrate
 
-### Subsonic endpoints
+---
+
+### Subsonic / OpenSubsonic endpoints
 
 #### Fully implemented
 
@@ -71,15 +106,30 @@ Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
 | `getIndexes` | A–Z artist index; includes `coverArt` per artist |
 | `getMusicDirectory` | Artist and album directory traversal |
 | `getAlbum` | Album with full track list; returns `name` + `artistId` (AlbumID3) |
-| `getAlbumList` | All sort modes including random; `byYear` filters by `fromYear`/`toYear`; `byGenre` filters by `genre` |
+| `getAlbumList` | All sort modes including random; `byYear` and `byGenre` filters |
 | `getAlbumList2` | ID3 variant; same data shape as `getAlbumList` |
 | `getSong` | Single track by id |
-| `search3` | Artists / albums / tracks with server-side pagination (all six offset params) |
+| `search3` | Artists / albums / tracks with server-side pagination |
 | `stream` | Raw + transcoded, Range-aware; `timeOffset` not supported |
 | `download` | Raw only (no transcode) |
-| `getCoverArt` | Serves from artwork cache; `size` accepted but not resized (full resolution always returned) |
-| `getUser` | Returns roles for requesting user (or any user if admin); `folder[]` not included |
-| `createUser` | Admin-only; `email` accepted but not stored |
+| `getCoverArt` | Serves from artwork cache; `size` accepted but not resized |
+| `getUser` | Own account for regular users; any account for admins |
+| `getUsers` | All accounts; admin only |
+| `createUser` | Admin only; all Subsonic role flags supported |
+| `updateUser` | Admin only; update any user field or role |
+| `deleteUser` | Admin only; cannot delete own account |
+| `changePassword` | Any user can change their own; admin can change any |
+| `getOpenSubsonicExtensions` | No auth required; advertises supported extensions |
+
+#### OpenSubsonic extensions
+
+All responses include the required OpenSubsonic envelope fields:
+- `openSubsonic: true`
+- `type: "muse"`
+- `serverVersion: "0.1.0"`
+
+Song objects include OpenSubsonic extended fields: `mediaType`, `genres[]`,
+`artists[]`, `albumArtists[]`, `displayArtist`, `displayAlbumArtist`.
 
 #### Stubs — valid empty responses, not yet implemented
 
@@ -109,8 +159,6 @@ but carry no real data yet.
 | `getRandomSongs` | Random track selection |
 | `search2` | Legacy search (pre–search3) |
 | `updatePlaylist` / `deletePlaylist` | Playlist management |
-| `getUsers` / `updateUser` / `deleteUser` | User management |
-| `changePassword` | Account self-service |
 | `getPlayQueue` / `savePlayQueue` | Cross-device queue sync |
 | `createBookmark` / `getBookmarks` / `deleteBookmark` | Audiobook / podcast position |
 | `getPodcasts` / `getNewestPodcasts` | Podcast feeds |
@@ -306,19 +354,31 @@ curl -X POST http://localhost:4040/api/maintenance/vacuum \
 
 ## Security notes
 
-1. **Subsonic authenticates every request with the user's password** —
-   either as plaintext `p=` or as an MD5 token+salt pair. Muse caches the
-   plaintext password **in memory only** after first login; nothing is
-   written to disk in cleartext.
-2. **Run behind HTTPS in production.** Without TLS, the password can be
-   read from any Subsonic request on the same network.
-3. The web UI stores your username and password in `localStorage` so
+1. **Two separate authentication systems run side by side:**
+   - The web UI uses **JWT Bearer tokens** (`/api/*`). You log in once, get a token, and every subsequent request sends that token in an `Authorization` header.
+   - Subsonic clients use **username + password** or **username + token + salt** (`/rest/*`). Every request is authenticated — there are no sessions.
+
+2. **Subsonic authenticates every request with the user's password** —
+   either as plaintext `p=` or as an MD5 token+salt pair. Run behind HTTPS
+   to prevent credentials being intercepted on the network.
+
+3. **Admin actions are protected.** Only admin accounts can trigger scans,
+   manage music folders, create/update/delete other users, or view all user accounts.
+   Regular users are limited to browsing, streaming, and changing their own password.
+
+4. **Passwords are stored with bcrypt** (cost 12). Bcrypt is deliberately slow to
+   compute, making brute-force attacks expensive. Plaintext passwords are never
+   written to disk — only the hash is stored.
+
+5. Change the default `admin` / `admin` credentials before exposing to
+   a network.
+
+6. Set `jwt_secret` to a long random string. An empty or guessable secret
+   allows anyone to forge session tokens.
+
+7. The web UI stores your username and password in `localStorage` so
    Subsonic calls can authenticate without re-prompting. Sign out from the
    sidebar to wipe the credentials.
-4. Change the default `admin` / `admin` credentials before exposing to
-   a network.
-5. Set `jwt_secret` to a long random string. An empty or guessable secret
-   allows anyone to forge session tokens.
 
 ---
 
@@ -328,7 +388,6 @@ curl -X POST http://localhost:4040/api/maintenance/vacuum \
 - **Starred / favourites** — per-user across the full Subsonic hierarchy
 - **Play counts and scrobbling** — Last.fm integration, internal play history
 - **Now-playing roster** — see what's streaming across all sessions
-- **User management** — add/remove users, role assignment from the web UI
 - **FTS5 full-text search** — fast fuzzy search at 500 k+ tracks without
   table-scan LIKE queries
 - **On-the-fly cover art resizing** — serve thumbnails at the requested
@@ -348,9 +407,14 @@ curl -X POST http://localhost:4040/api/maintenance/vacuum \
                 ┌──────────────────────────────────────────┐
                 │           FastAPI application            │
                 │                                          │
-   browsers ───▶│  /api/*    (web UI, JWT-bearer)          │
+   browsers ───▶│  /api/*    (web UI, JWT-bearer auth)     │
    clients  ───▶│  /rest/*   (Subsonic, password auth)     │
                 └──────────────────────────────────────────┘
+                                   │
+                    Auth & permissions (deps.py)
+                    ├── jwt_admin  → admin-only /api/* endpoints
+                    ├── jwt_user   → any-user /api/* endpoints
+                    └── subsonic_context → all /rest/* endpoints
                                    │
                                    ▼
                 ┌──────────────────────────────────────────┐
@@ -380,6 +444,9 @@ Key design decisions:
   Identical artwork shared across many albums is stored once.
 - **Both `/rest/X` and `/rest/X.view`** are registered; legacy clients
   hard-code one form or the other.
+- **OpenSubsonic 1.16.1 compliant.** Every response carries `openSubsonic: true`,
+  `type`, and `serverVersion`. Song objects include the extended fields
+  (`mediaType`, `genres[]`, `artists[]`, etc.).
 
 ---
 
@@ -396,7 +463,7 @@ muse-server/
 │   │   ├── subsonic.py      # /rest/* — Subsonic-compatible router
 │   │   ├── web.py           # /api/*  — internal web UI router
 │   │   ├── responses.py     # Subsonic envelope (json / xml / jsonp)
-│   │   └── deps.py          # FastAPI dependencies (auth context)
+│   │   └── deps.py          # FastAPI dependencies (JWT + Subsonic auth)
 │   ├── core/
 │   │   ├── auth.py          # bcrypt, JWT, Subsonic token+salt
 │   │   ├── library.py       # ID helpers, Subsonic shape builders
@@ -404,19 +471,24 @@ muse-server/
 │   │   └── lastfm.py        # Last.fm artist bio + image fetcher
 │   ├── db/
 │   │   ├── schema.sql       # Table definitions and indexes
-│   │   ├── connection.py    # Thread-local SQLite connections
-│   │   ├── migrations.py    # Versioned schema migrations
-│   │   ├── queries.py       # All hand-written SQL
+│   │   ├── connection.py    # Thread-local SQLite connections, transaction()
+│   │   ├── migrations.py    # Versioned schema migrations (runs on startup)
+│   │   ├── queries.py       # All hand-written SQL — every DB call lives here
 │   │   └── maintenance.py   # GC, VACUUM, WAL checkpoint
 │   ├── scanner/
 │   │   ├── walker.py        # os.scandir-based directory walker
 │   │   ├── metadata.py      # mutagen → ffprobe → filename pipeline
-│   │   ├── artwork.py       # Embedded + folder-art extraction
+│   │   ├── artwork.py       # Embedded + folder-art extraction and cache
 │   │   └── scanner.py       # Orchestration, progress, thread pool
 │   └── streaming/
 │       ├── presets.py       # Transcode preset table
 │       ├── transcoder.py    # FFmpeg subprocess pipe
 │       └── streamer.py      # Range-aware HTTP streamer
+├── tests/
+│   ├── conftest.py              # Shared pytest fixtures (isolated test DB)
+│   ├── test_permissions.py      # Auth / 401 / 403 gate tests
+│   ├── test_users.py            # Web UI user CRUD (/api/users/*)
+│   └── test_subsonic_users.py   # Subsonic user management (/rest/*)
 ├── frontend/
 │   ├── src/
 │   │   ├── main.ts          # Hash router, shell, player mount
@@ -437,6 +509,24 @@ muse-server/
 │   └── vite.config.ts
 └── config.example.yaml
 ```
+
+---
+
+## Running the tests
+
+```bash
+# Install dependencies (first time)
+.venv/bin/pip install -r backend/requirements.txt pytest httpx
+
+# Run all tests
+.venv/bin/pytest tests/ -v
+
+# Run a specific file
+.venv/bin/pytest tests/test_subsonic_users.py -v
+```
+
+The test suite uses a temporary SQLite database per test — nothing is written to
+your real library. Tests cover permissions, user CRUD, and Subsonic protocol compliance.
 
 ---
 

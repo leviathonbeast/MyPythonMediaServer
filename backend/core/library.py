@@ -182,22 +182,31 @@ def get_song(song_id: str) -> Optional[Dict[str, any]]:
 
 def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Render a track row as a Subsonic 'song' object.
+    Render a track row as an OpenSubsonic song object.
 
-    Subsonic's required fields: id, title, isDir, parent, album, artist,
-    track, year, genre, coverArt, size, contentType, suffix, duration,
-    bitRate, path, isVideo (always false here), albumId, artistId, type.
+    Includes all Subsonic 1.16.1 required fields plus the OpenSubsonic
+    extensions (mediaType, genres, artists, albumArtists, displayArtist,
+    displayAlbumArtist) where we have the data. Fields the scanner doesn't
+    yet populate (bitDepth, samplingRate, channelCount, replayGain, bpm,
+    comment, musicBrainzId, contributors, moods) are omitted rather than
+    sent as null, keeping the payload compact and clients happy.
     """
-    return {
+    artist_id_str  = make_artist_id(t["artist_id"]) if t.get("artist_id") else None
+    album_id_str   = make_album_id(t["album_id"])   if t.get("album_id")  else None
+    artist_name    = t.get("artist_name")
+    genre          = t.get("genre")
+
+    out: Dict[str, Any] = {
         "id":          make_track_id(t["id"]),
-        "parent":      make_album_id(t["album_id"]) if t.get("album_id") else None,
+        "parent":      album_id_str,
+        "isDir":       False,
         "title":       t["title"],
         "album":       t.get("album_name"),
-        "artist":      t.get("artist_name"),
+        "artist":      artist_name,
         "track":       t.get("track_number"),
         "discNumber":  t.get("disc_number"),
         "year":        t.get("year"),
-        "genre":       t.get("genre"),
+        "genre":       genre,
         "coverArt":    t.get("cover_art_id"),
         "size":        t.get("size"),
         "contentType": t.get("content_type"),
@@ -206,11 +215,34 @@ def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
         "bitRate":     t.get("bitrate"),
         "path":        _relative_path(t.get("path")),
         "isVideo":     False,
-        "isDir":       False,
-        "albumId":     make_album_id(t["album_id"]) if t.get("album_id") else None,
-        "artistId":    make_artist_id(t["artist_id"]) if t.get("artist_id") else None,
+        "albumId":     album_id_str,
+        "artistId":    artist_id_str,
         "type":        "music",
+        # OpenSubsonic extensions
+        "mediaType":   "song",
     }
+
+    # Multi-value genre array (OpenSubsonic)
+    if genre:
+        out["genres"] = [{"name": genre}]
+
+    # Multi-artist arrays (OpenSubsonic) — we have a single artist per track
+    if artist_id_str and artist_name:
+        out["artists"]       = [{"id": artist_id_str, "name": artist_name}]
+        out["displayArtist"] = artist_name
+
+    # Album artist (may differ from track artist)
+    album_artist_id   = t.get("album_artist_id")
+    album_artist_name = t.get("album_artist_name") or artist_name
+    if album_artist_id and album_artist_name:
+        aa_id_str = make_artist_id(album_artist_id)
+        out["albumArtists"]       = [{"id": aa_id_str, "name": album_artist_name}]
+        out["displayAlbumArtist"] = album_artist_name
+    elif artist_id_str and album_artist_name:
+        out["albumArtists"]       = [{"id": artist_id_str, "name": album_artist_name}]
+        out["displayAlbumArtist"] = album_artist_name
+
+    return out
 
 
 def _relative_path(absolute: Optional[str]) -> Optional[str]:

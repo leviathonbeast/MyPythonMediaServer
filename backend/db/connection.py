@@ -117,9 +117,21 @@ def transaction() -> Iterator[sqlite3.Connection]:
             conn.execute(...)
             conn.execute(...)
 
-    On clean exit we COMMIT; on exception we ROLLBACK and re-raise. SQLite
+    A "transaction" groups several database writes so they either ALL succeed
+    or ALL fail together (atomicity). For example, when the scanner writes an
+    artist, album, and 12 tracks, it does all of them inside one transaction.
+    If the server crashes halfway through, the partial data is rolled back
+    automatically — you never end up with an album that has no artist.
+
+    On clean exit we COMMIT (make the writes permanent and visible to other
+    connections). On exception we ROLLBACK and re-raise the error. SQLite
     auto-begins a transaction on the first write, so we just have to manage
     the commit/rollback boundary.
+
+    IMPORTANT for tests: writes are NOT visible to other database connections
+    until you call commit(). The `with transaction():` pattern is the correct
+    way to write data in test setup so that the API (which runs on a different
+    thread with its own connection) can see the seeded rows.
     """
     conn = get_conn()
     try:

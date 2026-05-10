@@ -5,65 +5,51 @@ These endpoints sit at /api/* and use JWT auth. They're shaped for the
 frontend's convenience, not Subsonic compatibility — clean JSON, conventional
 HTTP status codes.
 
-We deliberately keep the surface small:
-    POST /api/auth/login   → JWT
-    GET  /api/me           → current user
-    GET  /api/stats        → library stats
-    POST /api/scan         → trigger a scan
-    GET  /api/scan         → scan progress
+Permission model
+----------------
+Admin-only (require is_admin=True):
+    POST   /api/scan              — trigger a library scan
+    POST   /api/scan/cancel       — cancel an in-progress scan
+    POST   /api/maintenance/gc    — garbage-collect orphan rows + artwork
+    POST   /api/maintenance/vacuum — GC + VACUUM database file
+    POST   /api/folders           — add a music folder
+    DELETE /api/folders/{id}      — remove a music folder
+    GET    /api/users             — list all users
+    POST   /api/users             — create a user
+    GET    /api/users/{id}        — get a specific user
+    PATCH  /api/users/{id}        — update is_admin flag or reset password
+    DELETE /api/users/{id}        — remove a user
 
-The frontend uses the same /rest/* Subsonic endpoints for data (browse,
-search, stream). That keeps the contract surface small and means we eat our
-own dogfood — if Subsonic clients work, the web UI works.
+Any authenticated user:
+    POST  /api/auth/login         — obtain JWT (no token required)
+    GET   /api/me                 — current user info
+    POST  /api/me/password        — change own password
+    GET   /api/stats              — library counts
+    GET   /api/scan               — scan progress (read-only)
+    GET   /api/folders            — list music folders
+    GET   /api/transcoding/policy — transcoding config
+    GET   /api/artist/{id}        — artist detail + bio
 """
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from backend.core import auth as auth_core
-from backend.core import library as library_core
 from backend.core import lastfm
-from backend.db import queries
+from backend.core import library as library_core
 from backend.db import maintenance as db_maintenance
+from backend.db import queries
 from backend.scanner import cancel_scan, get_progress, start_scan_async
 from backend.streaming import presets as transcode_presets
 
+from .deps import jwt_admin, jwt_user
+
 router = APIRouter(prefix="/api", tags=["web"])
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-# ---------------------------------------------------------------------------
-# JWT dependency
-# ---------------------------------------------------------------------------
-
-def jwt_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> dict:
-    """
-    Extract and verify the JWT bearer. Raises 401 on any failure.
-    Returns the payload (sub, username, is_admin).
-    """
-    if creds is None or creds.scheme.lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
-    payload = auth_core.decode_jwt(creds.credentials)
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-    return payload
-
-
-def jwt_admin(user: dict = Depends(jwt_user)) -> dict:
-    """JWT dependency that additionally requires the user to be an admin.
-
-    Used to gate destructive maintenance endpoints (gc, vacuum). We deliberately
-    return 403 (not 401) when the token is valid but the user lacks the role —
-    that way the frontend doesn't sign the user out on a permission denial.
-    """
-    if not user.get("is_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
-    return user
 
 
 # ---------------------------------------------------------------------------
@@ -81,20 +67,41 @@ class LoginResponse(BaseModel):
     is_admin: bool
 
 
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+
+class UserPatchRequest(BaseModel):
+    is_admin: Optional[bool] = None
+    password: Optional[str] = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class FolderAddRequest(BaseModel):
+    name: str
+    path: str
+
+
 # ---------------------------------------------------------------------------
-# Endpoints
+# Auth endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/auth/login", response_model=LoginResponse)
 def login(body: LoginRequest):
     user = queries.get_user_by_username(body.username)
     if user is None or not auth_core.verify_password(body.password, user["password_hash"]):
-        # Same message for unknown user / bad password — don't leak existence.
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Side effect: cache the plaintext for Subsonic token+salt verification.
-    # See core/auth.py::_verify_with_password — we re-run it here so a single
-    # successful web login enables the user's Subsonic clients too.
+    # Warm the plaintext cache so that the Subsonic token+salt auth flow works
+    # immediately after web-UI login. Without this, a user who logs in via the
+    # web UI and then opens a Subsonic client would need to re-authenticate once
+    # with the password path before token+salt starts working.
     auth_core._verify_with_password(body.username, body.password)
 
     token = auth_core.create_jwt(user)
@@ -103,28 +110,51 @@ def login(body: LoginRequest):
 
 @router.get("/me")
 def me(user=Depends(jwt_user)):
-    """Return the JWT payload — useful for the frontend to refresh state."""
+    """Return the JWT payload — lets the frontend refresh its local state."""
     return user
 
+
+@router.post("/me/password")
+def change_own_password(body: PasswordChangeRequest, user: dict = Depends(jwt_user)):
+    """Change the calling user's own password after verifying the current one."""
+    db_user = queries.get_user_by_username(user["username"])
+    if db_user is None or not auth_core.verify_password(body.current_password, db_user["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if not body.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must not be empty")
+    queries.update_user_password(db_user["id"], auth_core.hash_password(body.new_password))
+    return {"updated": True}
+
+
+# ---------------------------------------------------------------------------
+# Library stats
+# ---------------------------------------------------------------------------
 
 @router.get("/stats")
 def stats(_=Depends(jwt_user)):
     return queries.library_stats()
 
 
+# ---------------------------------------------------------------------------
+# Scan management (admin-only write; user read)
+# ---------------------------------------------------------------------------
+
 @router.post("/scan")
-def trigger_scan(_=Depends(jwt_user)):
+def trigger_scan(_=Depends(jwt_admin)):
+    """Start a library scan. Admin only."""
     started = start_scan_async()
     return {"started": started, "progress": _progress_dict()}
 
 
 @router.get("/scan")
 def scan_progress(_=Depends(jwt_user)):
+    """Read-only scan progress. Available to all authenticated users."""
     return _progress_dict()
 
 
 @router.post("/scan/cancel")
-def cancel_scan_endpoint(_=Depends(jwt_user)):
+def cancel_scan_endpoint(_=Depends(jwt_admin)):
+    """Cancel a running scan. Admin only."""
     cancelled = cancel_scan()
     return {"cancelled": cancelled, "progress": _progress_dict()}
 
@@ -150,60 +180,34 @@ def _progress_dict():
 
 
 # ---------------------------------------------------------------------------
-# Maintenance endpoints
+# Maintenance (admin-only)
 # ---------------------------------------------------------------------------
-# These are admin-only because they're destructive: gc removes orphan rows
-# and orphan artwork files, vacuum rewrites the database file. Both are
-# safe in the sense that they only remove things already invisible to the
-# user, but mistakes here would be hard to undo.
-
-# We deliberately refuse to GC during a running scan. A scan is itself a
-# write-heavy workload and GC would (a) compete for SQLite write locks and
-# (b) potentially delete artwork files that the in-flight scan is about to
-# reference. Cleaner to ask the user to wait.
 
 @router.post("/maintenance/gc")
 def maintenance_gc(_=Depends(jwt_admin)):
-    """Run routine garbage collection: orphan rows + orphan artwork files."""
+    """Garbage-collect orphan rows and orphan artwork files."""
     if get_progress().running:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot run GC while a scan is in progress",
         )
-    result = db_maintenance.run_gc(vacuum=False)
-    return result.as_dict()
+    return db_maintenance.run_gc(vacuum=False).as_dict()
 
 
 @router.post("/maintenance/vacuum")
 def maintenance_vacuum(_=Depends(jwt_admin)):
-    """Run GC and additionally VACUUM the database (rewrites the file).
-
-    This is potentially long-running and acquires an exclusive lock for the
-    duration; expect every other request to block. Worth running occasionally
-    after deleting a lot of music.
-    """
+    """GC + VACUUM the database file. Potentially long-running."""
     if get_progress().running:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot vacuum while a scan is in progress",
         )
-    result = db_maintenance.run_gc(vacuum=True)
-    return result.as_dict()
+    return db_maintenance.run_gc(vacuum=True).as_dict()
 
 
 # ---------------------------------------------------------------------------
-# Music folder management
+# Music folder management (admin-only write; user read)
 # ---------------------------------------------------------------------------
-# At first boot music_folders is seeded from config.yaml's `music_folders:`
-# list (see migrations.py::_migration_003_seed_music_folders), but after
-# that the database is the source of truth — these endpoints let an admin
-# add and remove folders at runtime without restarting. The config.yaml
-# list is essentially a bootstrap for fresh installs.
-
-class FolderAddRequest(BaseModel):
-    name: str
-    path: str
-
 
 @router.get("/folders")
 def folders_list(_=Depends(jwt_user)):
@@ -213,19 +217,8 @@ def folders_list(_=Depends(jwt_user)):
 
 @router.post("/folders", status_code=status.HTTP_201_CREATED)
 def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
-    """Add a music folder.
-
-    Validation rules:
-      - `path` must exist on disk and be readable as a directory at the
-        moment of the request. Saves the user from "I added /mnt/foo
-        but the scan finds nothing" — almost always a typo or an
-        unmounted share.
-      - `path` is normalised (expanduser + resolve) so that two
-        cosmetically-different inputs pointing at the same directory
-        don't both get added.
-      - `name` falls back to the basename of the path if blank.
-    """
-    import os as _os, sqlite3 as _sqlite3
+    """Add a music folder. Admin only."""
+    import os as _os
     from pathlib import Path as _Path
 
     raw_path = body.path.strip()
@@ -242,7 +235,7 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
             status_code=400,
             detail=(
                 f"{resolved} is not a readable directory — "
-                "is the path correct and the share / mount available?"
+                "is the path correct and the share/mount available?"
             ),
         )
     if not _os.access(resolved, _os.R_OK):
@@ -252,7 +245,7 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
 
     try:
         new_id = queries.add_music_folder(name, resolved)
-    except _sqlite3.IntegrityError:
+    except sqlite3.IntegrityError:
         existing = queries.get_music_folder_by_path(resolved)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -264,13 +257,7 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_200_OK)
 def folders_delete(folder_id: int, _=Depends(jwt_admin)):
-    """Remove a music folder.
-
-    All tracks under it are cascade-deleted by foreign key. Files on disk
-    are NOT touched — Muse never modifies the user's music files. After
-    deletion we kick off a GC to prune the now-empty albums/artists and
-    their orphan artwork. We refuse to delete during a running scan.
-    """
+    """Remove a music folder and cascade-delete its tracks. Admin only."""
     if get_progress().running:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -282,10 +269,8 @@ def folders_delete(folder_id: int, _=Depends(jwt_admin)):
 
     deleted = queries.delete_music_folder(folder_id)
     if not deleted:
-        # Race: someone deleted it between our check and ours. Treat as success.
         return {"deleted": False, "folder": folder}
 
-    # Best-effort GC; failure here doesn't undo the delete.
     try:
         gc_result = db_maintenance.run_gc(vacuum=False).as_dict()
     except Exception:
@@ -295,29 +280,93 @@ def folders_delete(folder_id: int, _=Depends(jwt_admin)):
 
 
 # ---------------------------------------------------------------------------
-# Transcoding policy
+# User management (admin-only)
 # ---------------------------------------------------------------------------
-# Exposes the server's effective transcoding configuration so the frontend
-# can populate its quality dropdown from a single source of truth and
-# mirror the resolve_preset rules to display a "transcoded" badge in the
-# player without an extra round-trip per track.
+
+@router.get("/users")
+def users_list(_=Depends(jwt_admin)):
+    """List all users. Password hashes are never included."""
+    return queries.list_users()
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+def users_create(body: UserCreateRequest, _=Depends(jwt_admin)):
+    """Create a new user. Admin only."""
+    if not body.username.strip():
+        raise HTTPException(status_code=400, detail="Username must not be empty")
+    if not body.password:
+        raise HTTPException(status_code=400, detail="Password must not be empty")
+    try:
+        new_id = queries.create_user(
+            body.username.strip(),
+            auth_core.hash_password(body.password),
+            is_admin=body.is_admin,
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Username '{body.username}' is already taken",
+        )
+    return {"id": new_id, "username": body.username.strip(), "is_admin": body.is_admin}
+
+
+@router.get("/users/{user_id}")
+def users_get(user_id: int, _=Depends(jwt_admin)):
+    """Get a specific user by id. Admin only."""
+    user = queries.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+    return user
+
+
+@router.patch("/users/{user_id}")
+def users_patch(user_id: int, body: UserPatchRequest, admin: dict = Depends(jwt_admin)):
+    """Update a user's admin flag and/or password. Admin only.
+
+    Supplying neither field is a no-op. Admins cannot demote themselves to
+    prevent lockout (they can demote other admins).
+    """
+    user = queries.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+
+    if body.is_admin is not None:
+        if user_id == int(admin["sub"]) and not body.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot remove your own admin role",
+            )
+        queries.set_user_admin(user_id, body.is_admin)
+
+    if body.password is not None:
+        if not body.password:
+            raise HTTPException(status_code=400, detail="Password must not be empty")
+        queries.update_user_password(user_id, auth_core.hash_password(body.password))
+
+    return queries.get_user_by_id(user_id)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
+def users_delete(user_id: int, admin: dict = Depends(jwt_admin)):
+    """Delete a user. Admins cannot delete their own account."""
+    if user_id == int(admin["sub"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own account",
+        )
+    user = queries.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+    queries.delete_user(user_id)
+    return {"deleted": True, "user": user}
+
+
+# ---------------------------------------------------------------------------
+# Transcoding policy (any user)
+# ---------------------------------------------------------------------------
 
 @router.get("/transcoding/policy")
 def transcoding_policy(_=Depends(jwt_user)):
-    """The server's transcoding rules + the menu of presets.
-
-    Shape:
-      {
-        "transcoding_enabled":     bool,
-        "default_format":          "raw" | "mp3" | "opus" | "ogg",
-        "default_bitrate":         int,
-        "max_streaming_bitrate":   int | null,
-        "presets": [
-          {"format": "mp3",  "bitrate": 320, "content_type": "audio/mpeg"},
-          ...
-        ]
-      }
-    """
     from backend.config import get_settings
     s = get_settings()
     return {
@@ -330,44 +379,26 @@ def transcoding_policy(_=Depends(jwt_user)):
 
 
 # ---------------------------------------------------------------------------
-# Artist page
+# Artist detail (any user)
 # ---------------------------------------------------------------------------
-# Custom non-Subsonic endpoint used by the new artist view. Subsonic's
-# getMusicDirectory and getArtist both work, but neither returns:
-#   - albums grouped by release type (album / EP / single / compilation)
-#   - an artist biography
-# So we add this one. The frontend prefers it for the artist page; mobile
-# Subsonic clients keep using getMusicDirectory and don't see any of this.
 
-# Mapping from the various tag values we see in the wild to the four
-# UI sections. Anything not listed maps to "albums".
 _RELEASE_TYPE_GROUPS = {
-    # primary albums
     "album":        "albums",
     "":             "albums",
     None:           "albums",
-    # EPs
     "ep":           "eps",
-    # singles
     "single":       "singles",
-    # compilations / soundtracks behave like compilations to most listeners
     "compilation":  "compilations",
     "soundtrack":   "compilations",
     "anthology":    "compilations",
-    # everything else gets bucketed into "other": live, remix, demo,
-    # broadcast, dj-mix, mixtape, audiobook, audio drama, spokenword,
-    # interview. Treated as a junk drawer.
 }
 
 
 @router.get("/artist/{artist_id_str}")
 def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
     """Return artist + grouped albums + optional Last.fm bio."""
-    # Accept Subsonic-prefixed ids ("ar-42") or bare integers ("42") so
-    # frontend code can pass through whatever it has in hand.
     kind, internal_id = library_core.parse_id(artist_id_str)
     if kind != "artist":
-        # Fall back to bare integer for testing convenience.
         try:
             internal_id = int(artist_id_str)
         except ValueError:
@@ -382,18 +413,12 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
 
     albums = queries.list_artist_albums(internal_id)
 
-    # Group by mapped release type, preserving year ordering within each.
     grouped: dict[str, list] = {
-        "albums":       [],
-        "eps":          [],
-        "singles":      [],
-        "compilations": [],
-        "other":        [],
+        "albums": [], "eps": [], "singles": [], "compilations": [], "other": [],
     }
     for a in albums:
         rt = (a.get("release_type") or "").strip().lower() or None
         bucket = _RELEASE_TYPE_GROUPS.get(rt, "other")
-        # Render each album in the same shape the album-card UI consumes.
         grouped[bucket].append({
             "id":           library_core.make_album_id(a["id"]),
             "name":         a["name"],
@@ -407,8 +432,6 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
             "coverArt":     a.get("cover_art_id"),
         })
 
-    # Last.fm bio is best-effort. Failure is silent and the frontend just
-    # doesn't render that section.
     bio = lastfm.get_artist_bio(artist["name"])
 
     return {
