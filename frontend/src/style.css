@@ -154,7 +154,7 @@ a:hover { color: var(--accent); }
   padding: var(--gap-6) var(--gap-4);
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: calc(100vh - var(--player-h));
   overflow-y: auto;
   display: flex;
   flex-direction: column;
