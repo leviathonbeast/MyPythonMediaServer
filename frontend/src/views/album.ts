@@ -65,6 +65,8 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
 
     const tbody = host.querySelector<HTMLTableSectionElement>("[data-tracklist] tbody")!;
     tbody.addEventListener("click", (e) => {
+      // Let title/artist links navigate naturally; play only on bare row clicks.
+      if ((e.target as HTMLElement).closest("a")) return;
       const tr = (e.target as HTMLElement).closest("tr");
       if (!tr) return;
       const idx = Number(tr.dataset.idx);
@@ -89,11 +91,14 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
 
 function trackRowHtml(s: SubsonicSong, idx: number): string {
   const trackNum = s.track ?? idx + 1;
+  const artistCell = s.artistId
+    ? `<a href="#/artist/${encodeURIComponent(s.artistId)}">${escapeHtml(s.artist ?? "")}</a>`
+    : escapeHtml(s.artist ?? "");
   return `
     <tr data-idx="${idx}" data-tid="${escapeHtml(String(s.id))}" style="cursor:pointer">
       <td class="num">${trackNum}</td>
-      <td class="title">${escapeHtml(s.title)}</td>
-      <td>${escapeHtml(s.artist ?? "")}</td>
+      <td class="title"><a href="#/track/${encodeURIComponent(s.id)}">${escapeHtml(s.title)}</a></td>
+      <td>${artistCell}</td>
       <td class="duration">${fmtDuration(s.duration)}</td>
     </tr>
   `;
