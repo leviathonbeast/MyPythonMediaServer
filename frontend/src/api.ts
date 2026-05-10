@@ -174,6 +174,7 @@ export interface SubsonicArtist {
   id: string;
   name: string;
   albumCount?: number;
+  coverArt?: string;
 }
 export interface SubsonicIndex {
   name: string;

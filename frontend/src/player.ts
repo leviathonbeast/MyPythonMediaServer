@@ -150,7 +150,9 @@ class Player {
       index: this.index,
       playing: !this.audio.paused && this.index >= 0,
       currentTime: this.audio.currentTime || 0,
-      duration: this.audio.duration || (current?.duration ?? 0),
+      duration: Number.isFinite(this.audio.duration)
+        ? this.audio.duration
+        : (current?.duration ?? 0),
       volume: this.audio.volume,
       current,
     };

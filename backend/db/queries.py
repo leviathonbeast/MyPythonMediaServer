@@ -146,7 +146,13 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
     rows = get_conn().execute(
         """
         SELECT a.id, a.name, COUNT(al.id) AS album_count,
-               COALESCE(a.sort_name, a.name) AS sort_name
+               COALESCE(a.sort_name, a.name) AS sort_name,
+               (SELECT al2.cover_art_id
+                  FROM albums al2
+                 WHERE al2.artist_id = a.id
+                   AND al2.cover_art_id IS NOT NULL
+                 ORDER BY al2.year DESC, al2.created_at DESC
+                 LIMIT 1) AS cover_art_id
           FROM artists a
           JOIN albums al ON al.artist_id = a.id
          GROUP BY a.id, a.name, a.sort_name
@@ -162,9 +168,10 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
         if not key.isalpha():
             key = "#"
         indexed.setdefault(key, []).append({
-            "id": row["id"],
-            "name": row["name"],
-            "albumCount": row["album_count"],
+            "id":          row["id"],
+            "name":        row["name"],
+            "albumCount":  row["album_count"],
+            "coverArtId":  row["cover_art_id"],
         })
     return indexed
 
