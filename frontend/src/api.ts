@@ -329,6 +329,10 @@ export async function startScan(): Promise<{ started: boolean; progress: ScanPro
   return apiPost<{ started: boolean; progress: ScanProgress }>("/api/scan", {});
 }
 
+export async function cancelScan(): Promise<{ cancelled: boolean; progress: ScanProgress }> {
+  return apiPost<{ cancelled: boolean; progress: ScanProgress }>("/api/scan/cancel", {});
+}
+
 /* ---------- Maintenance / GC ---------- */
 
 export interface GcResult {

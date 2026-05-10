@@ -30,7 +30,7 @@ from backend.core import library as library_core
 from backend.core import lastfm
 from backend.db import queries
 from backend.db import maintenance as db_maintenance
-from backend.scanner import get_progress, start_scan_async
+from backend.scanner import cancel_scan, get_progress, start_scan_async
 from backend.streaming import presets as transcode_presets
 
 router = APIRouter(prefix="/api", tags=["web"])
@@ -121,6 +121,12 @@ def trigger_scan(_=Depends(jwt_user)):
 @router.get("/scan")
 def scan_progress(_=Depends(jwt_user)):
     return _progress_dict()
+
+
+@router.post("/scan/cancel")
+def cancel_scan_endpoint(_=Depends(jwt_user)):
+    cancelled = cancel_scan()
+    return {"cancelled": cancelled, "progress": _progress_dict()}
 
 
 def _progress_dict():

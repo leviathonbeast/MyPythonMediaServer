@@ -4,7 +4,7 @@
 // background scan. Polls scan progress while a scan is running.
 
 import {
-  libraryStats, getScanProgress, startScan, runGc, runVacuum,
+  libraryStats, getScanProgress, startScan, cancelScan, runGc, runVacuum,
   listFolders, addFolder, deleteFolder,
   getTranscodingPolicy, getTranscodingPrefs, setTranscodingPrefs,
   type ScanProgress, type GcResult, type MusicFolder,
@@ -59,8 +59,9 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
     </div>
     <div class="panel" data-scan>
       <div data-scanstate>—</div>
-      <div style="margin-top:1rem">
+      <div style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap">
         <button class="btn primary" data-rescan>▶ Start a fresh scan</button>
+        <button class="btn ghost" data-cancelscan style="display:none">✕ Cancel scan</button>
       </div>
     </div>
 
@@ -90,9 +91,28 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
 
   host.querySelector<HTMLButtonElement>("[data-rescan]")?.addEventListener("click", async () => {
     try {
-      await startScan();
+      const result = await startScan();
+      if (!result.started) {
+        alert("A scan is already in progress. Wait for it to finish or cancel it first.");
+        return;
+      }
     } catch (e) {
       alert((e as Error).message);
+      return;
+    }
+    await refreshScan(host);
+  });
+
+  host.querySelector<HTMLButtonElement>("[data-cancelscan]")?.addEventListener("click", async () => {
+    const btn = host.querySelector<HTMLButtonElement>("[data-cancelscan]");
+    if (!btn) return;
+    btn.disabled = true;
+    try {
+      await cancelScan();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      btn.disabled = false;
     }
     await refreshScan(host);
   });
@@ -430,6 +450,11 @@ async function refreshScan(host: HTMLElement): Promise<void> {
     return;
   }
   stateEl.innerHTML = scanHtml(progress);
+
+  const startBtn = host.querySelector<HTMLButtonElement>("[data-rescan]");
+  const cancelBtn = host.querySelector<HTMLButtonElement>("[data-cancelscan]");
+  if (startBtn) startBtn.disabled = progress.running;
+  if (cancelBtn) cancelBtn.style.display = progress.running ? "" : "none";
 
   // Keep polling while a scan is running so the UI updates live, but
   // pause when the tab isn't visible (no point sending requests no

@@ -51,8 +51,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
+import sqlite3
+
 from backend.config import get_settings
 from backend.core import library, search
+from backend.core.auth import hash_password, _decode_subsonic_password
 from backend.db import queries
 from backend.scanner import artwork as artwork_module
 from backend.streaming import stream_track
@@ -381,6 +384,24 @@ def scrobble(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
 def get_now_playing(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
     # TODO: track in-flight stream sessions.
     return responses.ok({"nowPlaying": {"entry": []}}, fmt=ctx.fmt, callback=ctx.callback)
+
+
+@_double_register("createUser")
+def create_user(
+    username: str = Query(...),
+    password: str = Query(...),
+    email: Optional[str] = Query(default=None),  # noqa: ARG001 — accepted for spec compat, not stored
+    adminRole: bool = Query(default=False),
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+    if not ctx.is_admin:
+        return responses.error(responses.ERR_NOT_AUTHORIZED, "Admin required", fmt=ctx.fmt, callback=ctx.callback)
+    plaintext = _decode_subsonic_password(password)
+    try:
+        queries.create_user(username, hash_password(plaintext), is_admin=adminRole)
+    except sqlite3.IntegrityError:
+        return responses.error(responses.ERR_GENERIC, f"Username '{username}' already exists", fmt=ctx.fmt, callback=ctx.callback)
+    return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 
 @_double_register("getUser")

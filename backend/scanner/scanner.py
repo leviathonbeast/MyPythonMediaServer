@@ -73,11 +73,20 @@ class ScanProgress:
 
 _progress = ScanProgress()
 _lock = threading.Lock()
+_cancel_event = threading.Event()
 
 
 def get_progress() -> ScanProgress:
     """Read-only snapshot of scan progress."""
     return _progress
+
+
+def cancel_scan() -> bool:
+    """Request cancellation of a running scan. Returns True if one was running."""
+    if not _progress.running:
+        return False
+    _cancel_event.set()
+    return True
 
 
 def start_scan_async() -> bool:
@@ -88,6 +97,7 @@ def start_scan_async() -> bool:
     """
     if not _lock.acquire(blocking=False):
         return False
+    _cancel_event.clear()
     t = threading.Thread(target=_run_scan, name="muse-scanner", daemon=True)
     t.start()
     return True
@@ -105,6 +115,7 @@ def _run_scan() -> None:
     try:
         _run_scan_inner()
     finally:
+        _cancel_event.clear()
         _lock.release()
 
 
@@ -120,6 +131,9 @@ def _run_scan_inner() -> None:
     extensions = set(e.lower() for e in settings.audio_extensions)
 
     for folder in folders:
+        if _cancel_event.is_set():
+            log.info("scan: cancelled before folder %s", folder["path"])
+            break
         _progress.current_folder = folder["path"]
         try:
             _scan_folder(folder, extensions)
@@ -131,16 +145,19 @@ def _run_scan_inner() -> None:
 
     _progress.current_folder = None
 
-    # Routine GC: prune dangling references and orphan artwork files now
-    # that the scan is settled. Cheap; finishes in well under a second.
-    # We deliberately don't VACUUM here — that's expensive and only worth
-    # it occasionally; users can trigger it from /api/maintenance/gc.
-    try:
-        from backend.db.maintenance import run_gc
-        run_gc(vacuum=False)
-    except Exception:
-        # GC failures must never poison a successful scan.
-        log.exception("post-scan GC failed (non-fatal)")
+    if _cancel_event.is_set():
+        log.info("scan: cancelled")
+    else:
+        # Routine GC: prune dangling references and orphan artwork files now
+        # that the scan is settled. Cheap; finishes in well under a second.
+        # We deliberately don't VACUUM here — that's expensive and only worth
+        # it occasionally; users can trigger it from /api/maintenance/gc.
+        try:
+            from backend.db.maintenance import run_gc
+            run_gc(vacuum=False)
+        except Exception:
+            # GC failures must never poison a successful scan.
+            log.exception("post-scan GC failed (non-fatal)")
 
     _progress.running = False
     _progress.finished_at = time.time()
@@ -301,12 +318,17 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                 else:
                     _progress.files_updated += 1
 
-    with ThreadPoolExecutor(max_workers=settings.scanner_workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=settings.scanner_workers)
+    try:
         future_to_item = {
             pool.submit(_parse_one, path, st, folder_id): (path, st, kind)
             for (path, st, kind) in to_parse
         }
         for fut in as_completed(future_to_item):
+            if _cancel_event.is_set():
+                for f in future_to_item:
+                    f.cancel()
+                break
             path, st, kind = future_to_item[fut]
             try:
                 rec = fut.result()
@@ -324,6 +346,14 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
             if len(pending) >= batch_size:
                 _commit(pending)
                 pending = []
+    finally:
+        # On cancellation use wait=False so a hung metadata-read worker
+        # doesn't block the caller indefinitely. On normal completion we
+        # wait so all results are safely flushed before we continue.
+        pool.shutdown(wait=not _cancel_event.is_set())
+
+    if _cancel_event.is_set():
+        return
 
     # Drain any partial batch left over.
     if pending:
