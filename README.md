@@ -121,7 +121,62 @@ but carry no real data yet.
 
 ## Installation
 
-### Prerequisites
+### Docker (recommended)
+
+A single container includes the built frontend, Python backend, and ffmpeg.
+
+```bash
+# 1. Clone the repo
+git clone <this-repo> muse && cd muse
+
+# 2. Set your music path — edit the volume under services.muse.volumes
+$EDITOR docker-compose.yml
+
+# 3. Start
+docker compose up -d
+```
+
+Open `http://localhost:4040`. Default login: `admin` / `admin`.
+
+**Key settings in `docker-compose.yml`:**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MUSE_JWT_SECRET` | `change-me-in-production` | **Change before exposing to a network** |
+| `MUSE_ADMIN_USERNAME` | `admin` | Applied once on first run only |
+| `MUSE_ADMIN_PASSWORD` | `admin` | Applied once on first run only |
+| `MUSE_SCAN_ON_STARTUP` | `true` | Scans the library on every container start |
+| `MUSE_LASTFM_API_KEY` | — | Enables artist bios and photos in the web UI |
+| `MUSE_MAX_STREAMING_BITRATE` | — | Caps transcoding output (kbps) |
+
+**Multiple music folders:**
+
+```yaml
+# docker-compose.yml
+environment:
+  MUSE_MUSIC_FOLDERS: '["/music/lossless", "/music/podcasts"]'
+volumes:
+  - /mnt/nas/lossless:/music/lossless:ro
+  - /mnt/nas/podcasts:/music/podcasts:ro
+```
+
+**Without docker-compose:**
+
+```bash
+docker build -t muse .
+docker run -d \
+  -p 4040:4040 \
+  -v "$(pwd)/data":/data \
+  -v /path/to/your/music:/music:ro \
+  -e MUSE_JWT_SECRET=change-me \
+  muse
+```
+
+---
+
+### Manual install
+
+#### Prerequisites
 
 - **Python 3.11+**
 - **FFmpeg** (`ffmpeg` and `ffprobe` on `PATH`):
@@ -282,7 +337,6 @@ curl -X POST http://localhost:4040/api/maintenance/vacuum \
   protocol (currently web-UI only)
 - **Cross-device play queue** — `getPlayQueue` / `savePlayQueue`
 - **Audiobook / podcast bookmarks**
-- **Docker image** — single-container deploy with ffmpeg bundled
 - **MusicBrainz metadata enrichment** — MBID lookup for canonical tags and
   richer artist data
 
@@ -333,6 +387,8 @@ Key design decisions:
 
 ```
 muse-server/
+├── Dockerfile           # Multi-stage: Node builds frontend, Python serves everything
+├── docker-compose.yml   # Ready-to-run with volume and env-var placeholders
 ├── backend/
 │   ├── main.py              # FastAPI app, lifespan, CORS, routers
 │   ├── config/              # Pydantic Settings + YAML loader

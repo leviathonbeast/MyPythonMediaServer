@@ -1,0 +1,31 @@
+services:
+  muse:
+    build: .
+    ports:
+      - "4040:4040"
+    volumes:
+      # Persistent data: SQLite database and extracted cover art.
+      - muse-data:/data
+      # Your music library. Change the left side to wherever your files live.
+      # Add :ro to make it read-only (recommended).
+      - /path/to/your/music:/music:ro
+    environment:
+      # Change this before exposing to the internet.
+      MUSE_JWT_SECRET: change-me-in-production
+
+      # First-run admin credentials. Only applied when the DB is first created.
+      MUSE_ADMIN_USERNAME: admin
+      MUSE_ADMIN_PASSWORD: admin
+
+      # Scan the library automatically on every container start.
+      MUSE_SCAN_ON_STARTUP: "true"
+
+      # Uncomment to add a Last.fm API key for artist bios.
+      # MUSE_LASTFM_API_KEY: your-key-here
+
+      # Uncomment to restrict transcoding bitrate (kbps) for mobile use.
+      # MUSE_MAX_STREAMING_BITRATE: "192"
+    restart: unless-stopped
+
+volumes:
+  muse-data:

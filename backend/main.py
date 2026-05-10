@@ -22,10 +22,12 @@ from __future__ import annotations
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.api import (
     SubsonicAuthError,
@@ -101,16 +103,40 @@ app.include_router(web_router)
 app.add_exception_handler(SubsonicAuthError, subsonic_auth_exception_handler)
 
 
-@app.get("/", include_in_schema=False)
-def root():
-    """Helpful redirect for humans hitting the bare host."""
-    return JSONResponse({
-        "name":    "Muse",
-        "version": "0.1.0",
-        "docs":    "/docs",
-        "rest":    "/rest/ping",
-        "web":     "Open the frontend dev server at http://localhost:5173",
-    })
+# ---------------------------------------------------------------------------
+# Static frontend — served when the Vite dist is present (i.e. in Docker /
+# any production build). In dev, the Vite dev-server handles this instead.
+# ---------------------------------------------------------------------------
+_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if _dist.is_dir():
+    # Hashed assets (JS/CSS bundles) get a long-lived cache header via
+    # StaticFiles. The mount must be registered before the catch-all below.
+    _assets = _dist / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="static-assets")
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return FileResponse(str(_dist / "index.html"))
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa_fallback(path: str):
+        """Serve matching files from dist, fall back to index.html for SPA routing."""
+        candidate = _dist / path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_dist / "index.html"))
+else:
+    @app.get("/", include_in_schema=False)
+    def root():
+        """Dev-mode info endpoint — replaced by the SPA in production."""
+        return JSONResponse({
+            "name":    "Muse",
+            "version": "0.1.0",
+            "docs":    "/docs",
+            "rest":    "/rest/ping",
+            "web":     "Open the frontend dev server at http://localhost:5173",
+        })
 
 
 # `python -m backend.main` convenience wrapper.
