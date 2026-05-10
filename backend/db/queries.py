@@ -541,6 +541,16 @@ def search3(
 # Users (auth)
 # ---------------------------------------------------------------------------
 
+def create_user(username: str, password_hash: str, is_admin: bool = False) -> int:
+    """Insert a new user. Raises sqlite3.IntegrityError if username is taken."""
+    now = int(time.time())
+    cur = get_conn().execute(
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
+        (username, password_hash, int(is_admin), now),
+    )
+    return cur.lastrowid
+
+
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     row = get_conn().execute(
         "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",

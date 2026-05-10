@@ -79,6 +79,7 @@ Compatible with **Symfonium**, **play:Sub**, **DSub**, **Substreamer**,
 | `download` | Raw only (no transcode) |
 | `getCoverArt` | Serves from artwork cache; `size` accepted but not resized (full resolution always returned) |
 | `getUser` | Returns roles for requesting user (or any user if admin); `folder[]` not included |
+| `createUser` | Admin-only; `email` accepted but not stored |
 
 #### Stubs — valid empty responses, not yet implemented
 
@@ -108,7 +109,7 @@ but carry no real data yet.
 | `getRandomSongs` | Random track selection |
 | `search2` | Legacy search (pre–search3) |
 | `updatePlaylist` / `deletePlaylist` | Playlist management |
-| `getUsers` / `createUser` / `updateUser` / `deleteUser` | User management |
+| `getUsers` / `updateUser` / `deleteUser` | User management |
 | `changePassword` | Account self-service |
 | `getPlayQueue` / `savePlayQueue` | Cross-device queue sync |
 | `createBookmark` / `getBookmarks` / `deleteBookmark` | Audiobook / podcast position |
