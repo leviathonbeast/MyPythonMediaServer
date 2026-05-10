@@ -187,7 +187,7 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
     """All albums by an artist, ordered by year then name."""
     rows = get_conn().execute(
         """
-        SELECT id, name, year, genre, release_type, track_count, duration,
+        SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
                cover_art_id, created_at
           FROM albums
          WHERE artist_id = ?
@@ -257,6 +257,9 @@ def list_albums(
     list_type: str = "alphabeticalByName",
     size: int = 10,
     offset: int = 0,
+    from_year: Optional[int] = None,
+    to_year: Optional[int] = None,
+    genre: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Implements getAlbumList's list types. Subsonic supports many; we ship the
@@ -270,10 +273,24 @@ def list_albums(
         "newest":             "al.created_at DESC",
         "alphabeticalByName": "al.name COLLATE NOCASE ASC",
         "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
-        "byYear":             "al.year DESC, al.name COLLATE NOCASE ASC",
-        "byGenre":            "al.genre COLLATE NOCASE ASC, al.name COLLATE NOCASE ASC",
+        "byYear":             "al.year ASC, al.name COLLATE NOCASE ASC",
+        "byGenre":            "al.name COLLATE NOCASE ASC",
         "random":             "RANDOM()",
     }.get(list_type, "al.name COLLATE NOCASE ASC")
+
+    where_clauses: List[str] = []
+    params: List[Any] = []
+
+    if list_type == "byYear" and from_year is not None and to_year is not None:
+        lo, hi = min(from_year, to_year), max(from_year, to_year)
+        where_clauses.append("al.year BETWEEN ? AND ?")
+        params.extend([lo, hi])
+
+    if list_type == "byGenre" and genre is not None:
+        where_clauses.append("al.genre = ? COLLATE NOCASE")
+        params.append(genre)
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
     rows = get_conn().execute(
         f"""
@@ -281,10 +298,11 @@ def list_albums(
                al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
+         {where_sql}
          ORDER BY {order_clause}
          LIMIT ? OFFSET ?
         """,
-        (size, offset),
+        (*params, size, offset),
     ).fetchall()
     return _rows_to_dicts(rows)
 
