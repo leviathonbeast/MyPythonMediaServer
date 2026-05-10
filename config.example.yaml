@@ -1,0 +1,95 @@
+# =============================================================================
+# Muse — example configuration
+# =============================================================================
+#
+# Copy this file to `config.yaml` (next to the `backend/` package) and edit
+# to taste. Any setting may also be overridden via an environment variable
+# with the prefix MUSE_ (e.g. MUSE_DATABASE_PATH=/var/muse/muse.db).
+#
+# Settings precedence (highest first):
+#   1. environment variables  (MUSE_*)
+#   2. config.yaml
+#   3. built-in defaults
+# -----------------------------------------------------------------------------
+
+# --- Library --------------------------------------------------------------- #
+
+# One or more directories to scan for music. These appear as the
+# "music folders" in Subsonic clients (getMusicFolders).
+# Use absolute paths. Symlinks are NOT followed by default.
+music_folders:
+  - /srv/music
+  # - /mnt/nas/music
+
+# Audio file extensions Muse will consider during the scan.
+audio_extensions:
+  - mp3
+  - flac
+  - m4a
+  - aac
+  - ogg
+  - opus
+  - wma
+  - wav
+
+# --- Storage --------------------------------------------------------------- #
+
+# Where to keep the SQLite database. Should be on a local disk (not over a
+# network mount) for both performance and corruption safety.
+database_path: ./data/muse.db
+
+# Where to cache extracted album artwork as image files.
+artwork_cache_dir: ./data/artwork
+
+# --- Scanner --------------------------------------------------------------- #
+
+# Number of worker threads used to parse metadata in parallel.
+# 4-8 is a good range; metadata parsing is CPU-light but I/O-heavy.
+scanner_workers: 4
+
+# How many tracks to batch into a single database transaction during scan.
+# Larger = faster; smaller = more granular crash recovery.
+scanner_batch_size: 200
+
+# Whether to kick off a full scan on every server start.
+# Recommended: false in production (use the /api/scan endpoint or a cron).
+run_initial_scan: false
+
+# --- Streaming ------------------------------------------------------------- #
+
+# Path to ffmpeg. "ffmpeg" if it's on PATH, otherwise an absolute path.
+ffmpeg_binary: ffmpeg
+
+# Buffer size for streaming chunks (bytes). 64 KB is a good default.
+streaming_chunk_size: 65536
+
+# --- Auth ------------------------------------------------------------------ #
+
+# Initial admin credentials. Used ONLY to bootstrap the user table on first
+# run; changing them later in this file does NOT reset the admin password.
+# CHANGE THESE BEFORE EXPOSING THE SERVER.
+admin_username: admin
+admin_password: admin
+
+# JWT signing secret for the web UI session tokens. CHANGE THIS to a long
+# random string in production. If left empty, Muse generates an ephemeral
+# one at startup (which logs out all users on every restart).
+jwt_secret: ""
+
+# How long web-UI JWTs stay valid (seconds). Default: 30 days.
+jwt_ttl_seconds: 2592000
+
+# --- Network --------------------------------------------------------------- #
+
+# CORS origins for the web UI. In production set this to your frontend
+# origin only. ["*"] is fine for local development.
+cors_origins:
+  - "*"
+
+# Bind address and port. "0.0.0.0" listens on all interfaces.
+host: 0.0.0.0
+port: 4040
+
+# --- Logging --------------------------------------------------------------- #
+
+log_level: INFO   # DEBUG | INFO | WARNING | ERROR
