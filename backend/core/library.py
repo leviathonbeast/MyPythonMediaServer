@@ -72,7 +72,12 @@ def get_indexes() -> Dict[str, Any]:
         indexes.append({
             "name": letter,
             "artist": [
-                {**a, "id": make_artist_id(a["id"])}
+                {
+                    "id":         make_artist_id(a["id"]),
+                    "name":       a["name"],
+                    "albumCount": a["albumCount"],
+                    "coverArt":   a.get("coverArtId"),
+                }
                 for a in grouped[letter]
             ],
         })

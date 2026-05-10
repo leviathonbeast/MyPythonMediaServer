@@ -505,21 +505,24 @@ a:hover { color: var(--accent); }
 .artist-card {
   display: block;
   cursor: pointer;
+  text-align: center;
 }
-.artist-card .art {
+.artist-art {
   aspect-ratio: 1;
+  border-radius: 50%;
   background: var(--bg-2);
-  border: 1px solid var(--rule);
-  margin-bottom: var(--gap-3);
+  background-size: cover;
+  background-position: center;
+  margin: 0 auto var(--gap-3);
   position: relative;
   overflow: hidden;
-  transition: transform 240ms var(--ease);
+  transition: transform 240ms var(--ease), box-shadow 240ms var(--ease);
 }
-.artist-card:hover .art {
-  transform: translate(-2px, -2px);
-  box-shadow: 4px 4px 0 var(--accent);
+.artist-card:hover .artist-art {
+  transform: scale(1.04);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
-.artist-card .art .placeholder {
+.artist-art .placeholder {
   position: absolute;
   inset: 0;
   display: flex;
