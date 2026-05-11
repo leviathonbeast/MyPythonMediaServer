@@ -258,7 +258,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
     elBadge.style.display = "block";
   }
 
-  // The Workshop view fires this when the user changes their preferences.
+  // The Settings view fires this when the user changes their preferences.
   const onPrefsChanged = () => updateBadge(player.snapshot().current);
   window.addEventListener("muse:transcoding-prefs-changed", onPrefsChanged);
 

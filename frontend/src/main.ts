@@ -52,7 +52,7 @@ function buildShell(): NonNullable<typeof shell> {
         <a href="#/"          data-route="/"        ><span>Albums</span><span class="num">A·01</span></a>
         <a href="#/library"   data-route="/library" ><span>Library</span><span class="num">A·02</span></a>
         <a href="#/search"    data-route="/search"  ><span>Search</span><span class="num">A·03</span></a>
-        <a href="#/settings"  data-route="/settings"><span>Workshop</span><span class="num">A·04</span></a>
+        <a href="#/settings"  data-route="/settings"><span>Settings</span><span class="num">A·04</span></a>
         <a href="#/profile"   data-route="/profile" ><span>Profile</span><span class="num">A·05</span></a>
         <a href="#/admin"     data-route="/admin"   style="display:none" data-admin-link><span>Admin</span><span class="num">A·06</span></a>
       </nav>

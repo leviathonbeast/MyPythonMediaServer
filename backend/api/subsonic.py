@@ -54,6 +54,7 @@ from backend.config import get_settings
 from backend.core import library, search
 from backend.core.auth import hash_password, _decode_subsonic_password
 from backend.db import queries
+from backend.db.connection import transaction
 from backend.scanner import artwork as artwork_module
 from backend.streaming import stream_track
 
@@ -494,22 +495,23 @@ def create_user(
         return responses.error(responses.ERR_NOT_AUTHORIZED, "Admin required", fmt=ctx.fmt, callback=ctx.callback)
     plaintext = _decode_subsonic_password(password)
     try:
-        queries.create_user(
-            username, hash_password(plaintext),
-            is_admin=adminRole,
-            email=email,
-            settings_role=settingsRole,
-            stream_role=streamRole,
-            jukebox_role=jukeboxRole,
-            download_role=downloadRole,
-            upload_role=uploadRole,
-            playlist_role=playlistRole,
-            cover_art_role=coverArtRole,
-            comment_role=commentRole,
-            podcast_role=podcastRole,
-            share_role=shareRole,
-            video_conversion_role=videoConversionRole,
-        )
+        with transaction():
+            queries.create_user(
+                username, hash_password(plaintext),
+                is_admin=adminRole,
+                email=email,
+                settings_role=settingsRole,
+                stream_role=streamRole,
+                jukebox_role=jukeboxRole,
+                download_role=downloadRole,
+                upload_role=uploadRole,
+                playlist_role=playlistRole,
+                cover_art_role=coverArtRole,
+                comment_role=commentRole,
+                podcast_role=podcastRole,
+                share_role=shareRole,
+                video_conversion_role=videoConversionRole,
+            )
     except sqlite3.IntegrityError:
         return responses.error(
             responses.ERR_GENERIC,
@@ -545,24 +547,25 @@ def update_user(
 
     password_hash = hash_password(_decode_subsonic_password(password)) if password else None
 
-    found = queries.update_user(
-        username,
-        password_hash=password_hash,
-        email=email,
-        is_admin=adminRole,
-        settings_role=settingsRole,
-        stream_role=streamRole,
-        jukebox_role=jukeboxRole,
-        download_role=downloadRole,
-        upload_role=uploadRole,
-        playlist_role=playlistRole,
-        cover_art_role=coverArtRole,
-        comment_role=commentRole,
-        podcast_role=podcastRole,
-        share_role=shareRole,
-        video_conversion_role=videoConversionRole,
-        max_bit_rate=maxBitRate,
-    )
+    with transaction():
+        found = queries.update_user(
+            username,
+            password_hash=password_hash,
+            email=email,
+            is_admin=adminRole,
+            settings_role=settingsRole,
+            stream_role=streamRole,
+            jukebox_role=jukeboxRole,
+            download_role=downloadRole,
+            upload_role=uploadRole,
+            playlist_role=playlistRole,
+            cover_art_role=coverArtRole,
+            comment_role=commentRole,
+            podcast_role=podcastRole,
+            share_role=shareRole,
+            video_conversion_role=videoConversionRole,
+            max_bit_rate=maxBitRate,
+        )
     if not found:
         return responses.error(responses.ERR_NOT_FOUND, f"User '{username}' not found", fmt=ctx.fmt, callback=ctx.callback)
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
@@ -582,7 +585,8 @@ def delete_user(
             "Cannot delete your own account",
             fmt=ctx.fmt, callback=ctx.callback,
         )
-    deleted = queries.delete_user_by_username(username)
+    with transaction():
+        deleted = queries.delete_user_by_username(username)
     if not deleted:
         return responses.error(responses.ERR_NOT_FOUND, f"User '{username}' not found", fmt=ctx.fmt, callback=ctx.callback)
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
@@ -603,7 +607,8 @@ def change_password(
     if user is None:
         return responses.error(responses.ERR_NOT_FOUND, "User not found", fmt=ctx.fmt, callback=ctx.callback)
     plaintext = _decode_subsonic_password(password)
-    queries.update_user_password(user["id"], hash_password(plaintext))
+    with transaction():
+        queries.update_user_password(user["id"], hash_password(plaintext))
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 

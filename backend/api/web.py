@@ -44,6 +44,7 @@ from backend.core import lastfm
 from backend.core import library as library_core
 from backend.db import maintenance as db_maintenance
 from backend.db import queries
+from backend.db.connection import transaction
 from backend.scanner import cancel_scan, get_progress, start_scan_async
 from backend.streaming import presets as transcode_presets
 
@@ -122,7 +123,8 @@ def change_own_password(body: PasswordChangeRequest, user: dict = Depends(jwt_us
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
     if not body.new_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must not be empty")
-    queries.update_user_password(db_user["id"], auth_core.hash_password(body.new_password))
+    with transaction():
+        queries.update_user_password(db_user["id"], auth_core.hash_password(body.new_password))
     return {"updated": True}
 
 
@@ -244,7 +246,8 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
     name = body.name.strip() or _os.path.basename(resolved.rstrip("/")) or resolved
 
     try:
-        new_id = queries.add_music_folder(name, resolved)
+        with transaction():
+            new_id = queries.add_music_folder(name, resolved)
     except sqlite3.IntegrityError:
         existing = queries.get_music_folder_by_path(resolved)
         raise HTTPException(
@@ -267,7 +270,8 @@ def folders_delete(folder_id: int, _=Depends(jwt_admin)):
     if folder is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such folder")
 
-    deleted = queries.delete_music_folder(folder_id)
+    with transaction():
+        deleted = queries.delete_music_folder(folder_id)
     if not deleted:
         return {"deleted": False, "folder": folder}
 
@@ -297,11 +301,12 @@ def users_create(body: UserCreateRequest, _=Depends(jwt_admin)):
     if not body.password:
         raise HTTPException(status_code=400, detail="Password must not be empty")
     try:
-        new_id = queries.create_user(
-            body.username.strip(),
-            auth_core.hash_password(body.password),
-            is_admin=body.is_admin,
-        )
+        with transaction():
+            new_id = queries.create_user(
+                body.username.strip(),
+                auth_core.hash_password(body.password),
+                is_admin=body.is_admin,
+            )
     except sqlite3.IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -330,18 +335,21 @@ def users_patch(user_id: int, body: UserPatchRequest, admin: dict = Depends(jwt_
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
 
-    if body.is_admin is not None:
-        if user_id == int(admin["sub"]) and not body.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You cannot remove your own admin role",
-            )
-        queries.set_user_admin(user_id, body.is_admin)
+    # Validate before opening the transaction — we don't want to leave a
+    # dangling open transaction on this thread when raising.
+    if body.is_admin is not None and user_id == int(admin["sub"]) and not body.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot remove your own admin role",
+        )
+    if body.password is not None and not body.password:
+        raise HTTPException(status_code=400, detail="Password must not be empty")
 
-    if body.password is not None:
-        if not body.password:
-            raise HTTPException(status_code=400, detail="Password must not be empty")
-        queries.update_user_password(user_id, auth_core.hash_password(body.password))
+    with transaction():
+        if body.is_admin is not None:
+            queries.set_user_admin(user_id, body.is_admin)
+        if body.password is not None:
+            queries.update_user_password(user_id, auth_core.hash_password(body.password))
 
     return queries.get_user_by_id(user_id)
 
@@ -357,7 +365,8 @@ def users_delete(user_id: int, admin: dict = Depends(jwt_admin)):
     user = queries.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
-    queries.delete_user(user_id)
+    with transaction():
+        queries.delete_user(user_id)
     return {"deleted": True, "user": user}
 
 

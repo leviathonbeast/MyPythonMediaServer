@@ -42,7 +42,7 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
   // so the layout reads top-to-bottom in the order we mount things below.
   host.innerHTML = `
     <header class="page-head">
-      <h1>The <em>workshop</em></h1>
+      <h1><em>Settings</em></h1>
       <div class="meta">— ${isAdmin ? "Library admin" : "Library stats & playback"}</div>
     </header>
   `;

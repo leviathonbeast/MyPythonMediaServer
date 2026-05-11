@@ -205,7 +205,7 @@ export function streamUrl(
   const params = subsonicAuthParams();
   params.set("id", String(trackId));
   // If caller didn't pass explicit options, fall back to the user's
-  // saved transcoding preferences (set in the Workshop view).
+  // saved transcoding preferences (set in the Settings view).
   const prefs = getTranscodingPrefs();
   const fmt = opts.format ?? prefs.format;
   const br = opts.maxBitRate ?? prefs.maxBitRate;
