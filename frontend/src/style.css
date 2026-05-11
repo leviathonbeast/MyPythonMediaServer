@@ -705,6 +705,20 @@ a:hover { color: var(--accent); }
 .tracklist tr:hover { background: rgba(255, 68, 35, 0.04); }
 .tracklist tr.playing td { color: var(--accent); }
 .tracklist tr.playing .num::before { content: "▸ "; color: var(--accent); }
+.tracklist tr.disc-header { cursor: default; }
+.tracklist tr.disc-header:hover { background: var(--bg-2); }
+.tracklist tr.disc-header td {
+  padding: var(--gap-4) var(--gap-3) var(--gap-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--bg-2);
+  border-top: 2px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
 
 .tracklist .num {
   font-family: var(--font-mono);

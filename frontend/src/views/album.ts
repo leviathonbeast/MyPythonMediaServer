@@ -18,6 +18,25 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
 
     const totalDuration = songs.reduce((acc, s) => acc + (s.duration ?? 0), 0);
 
+    // Group by disc number if the album spans more than one disc.
+    const discNums = [...new Set(songs.map(s => s.discNumber ?? 1))].sort((a, b) => a - b);
+    const isMultiDisc = discNums.length > 1;
+
+    let trackRows: string;
+    if (isMultiDisc) {
+      trackRows = discNums.map(disc => {
+        const header = `<tr class="disc-header"><td colspan="4">Disc ${disc}</td></tr>`;
+        const rows = songs
+          .map((s, i) => ({ s, i }))
+          .filter(({ s }) => (s.discNumber ?? 1) === disc)
+          .map(({ s, i }) => trackRowHtml(s, i))
+          .join("");
+        return header + rows;
+      }).join("");
+    } else {
+      trackRows = songs.map((s, i) => trackRowHtml(s, i)).join("");
+    }
+
     host.innerHTML = `
       <div class="album-head stagger">
         <div class="art" ${art ? `style="background-image:url('${art}')"` : `style="display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:6rem;color:var(--muted-2)"`}>
@@ -31,6 +50,7 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
               : escapeHtml(album.artist ?? "Unknown")}</div>
           <div class="stats">
             <span><strong>${songs.length}</strong> tracks</span>
+            ${isMultiDisc ? `<span><strong>${discNums.length}</strong> discs</span>` : ""}
             <span><strong>${fmtDuration(totalDuration)}</strong> runtime</span>
             ${album.year ? `<span><strong>${album.year}</strong> released</span>` : ""}
             ${album.genre ? `<span><strong>${escapeHtml(album.genre)}</strong> genre</span>` : ""}
@@ -52,7 +72,7 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
           </tr>
         </thead>
         <tbody>
-          ${songs.map((s, i) => trackRowHtml(s, i)).join("")}
+          ${trackRows}
         </tbody>
       </table>
     `;
