@@ -290,16 +290,31 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   elSeek.addEventListener("pointerdown", () => { isUserSeeking = true; });
   elSeek.addEventListener("pointerup",   () => { isUserSeeking = false; });
 
+  // The subscribe callback fires on every audio timeupdate (~4×/sec). Each
+  // call to coverArtUrl() generates a fresh random salt+token, producing a
+  // brand-new URL string for the same image — which makes the browser
+  // re-fetch the cover art on every tick. Cache the "what we last rendered"
+  // key so we only rebuild the URL (and trigger a network fetch) when the
+  // cover actually changes. "" is the sentinel for "nothing playing".
+  let lastCoverKey = "";
+
   const unsub = player.subscribe((state) => {
     if (state.current) {
       elTitle.textContent = state.current.title;
       elSub.textContent = `${state.current.artist ?? "Unknown"} — ${state.current.album ?? ""}`;
-      const art = coverArtUrl(state.current.coverArt, 120);
-      elArt.style.backgroundImage = art ? `url("${art}")` : "";
+      const nextKey = `art:${state.current.coverArt ?? ""}`;
+      if (nextKey !== lastCoverKey) {
+        lastCoverKey = nextKey;
+        const art = coverArtUrl(state.current.coverArt, 120);
+        elArt.style.backgroundImage = art ? `url("${art}")` : "";
+      }
     } else {
       elTitle.textContent = "—";
       elSub.textContent = "nothing playing";
-      elArt.style.backgroundImage = "";
+      if (lastCoverKey !== "") {
+        lastCoverKey = "";
+        elArt.style.backgroundImage = "";
+      }
     }
     updateBadge(state.current);
     elPlay.textContent = state.playing ? "❚❚ PAUSE" : "▶ PLAY";
