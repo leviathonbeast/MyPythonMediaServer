@@ -23,6 +23,8 @@ import { renderArtist } from "./views/artist";
 import { renderSearch } from "./views/search";
 import { renderSettings } from "./views/settings";
 import { renderTrack} from "./views/track";
+import { renderProfile } from "./views/profile";
+import { renderAdmin } from "./views/admin";
 
 const root = document.getElementById("app")!;
 
@@ -51,10 +53,11 @@ function buildShell(): NonNullable<typeof shell> {
         <a href="#/library"   data-route="/library" ><span>Library</span><span class="num">A·02</span></a>
         <a href="#/search"    data-route="/search"  ><span>Search</span><span class="num">A·03</span></a>
         <a href="#/settings"  data-route="/settings"><span>Workshop</span><span class="num">A·04</span></a>
+        <a href="#/admin"     data-route="/admin"   style="display:none" data-admin-link><span>Admin</span><span class="num">A·05</span></a>
       </nav>
 
       <div class="meta">
-        Signed in as <strong data-username>—</strong><br/>
+        Signed in as <strong><a href="#/profile" style="color:inherit;text-decoration:none" data-username>—</a></strong><br/>
         <button class="signout" data-signout>Sign out</button>
       </div>
     </aside>
@@ -69,10 +72,13 @@ function buildShell(): NonNullable<typeof shell> {
   const playerEl = el.querySelector<HTMLElement>("[data-player]")!;
   const navLinks = Array.from(el.querySelectorAll<HTMLAnchorElement>(".nav a"));
 
-  // Username + signout
-  const u = authState().username ?? "—";
-  el.querySelector<HTMLElement>("[data-username]")!.textContent = u;
+  // Username + signout + conditional admin link
+  const { username: u, is_admin } = authState();
+  el.querySelector<HTMLElement>("[data-username]")!.textContent = u ?? "—";
   el.querySelector<HTMLButtonElement>("[data-signout]")?.addEventListener("click", signOut);
+  if (is_admin) {
+    (el.querySelector<HTMLElement>("[data-admin-link]") as HTMLElement).style.display = "";
+  }
 
   const detachPlayer = mountPlayerDock(playerEl);
 
@@ -94,6 +100,8 @@ const routes: Route[] = [
   { match: /^\/library$/,      handle: (h)    => renderLibrary(h) },
   { match: /^\/search$/,       handle: (h)    => renderSearch(h) },
   { match: /^\/settings$/,     handle: (h)    => renderSettings(h) },
+  { match: /^\/profile$/,      handle: (h)    => renderProfile(h) },
+  { match: /^\/admin$/,        handle: (h)    => renderAdmin(h) },
   { match: /^\/?$/,            handle: (h)    => renderAlbums(h) },
 ];
 

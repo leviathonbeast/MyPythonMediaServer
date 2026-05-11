@@ -276,13 +276,41 @@ async function jwtFetch(path: string, init: RequestInit = {}): Promise<Response>
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const res = await jwtFetch(path, { method: "POST", body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail ?? msg; } catch { /* swallow */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await jwtFetch(path);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail ?? msg; } catch { /* swallow */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await jwtFetch(path, { method: "PATCH", body: JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail ?? msg; } catch { /* swallow */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  const res = await jwtFetch(path, { method: "DELETE" });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail ?? msg; } catch { /* swallow */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -507,6 +535,57 @@ export async function deleteFolder(id: number): Promise<{ deleted: boolean; fold
     throw new Error(msg);
   }
   return res.json();
+}
+
+/* ---------- User management ---------- */
+
+export interface MeInfo {
+  sub: string;
+  username: string;
+  is_admin: boolean;
+  iat: number;
+  exp: number;
+}
+
+export async function getMe(): Promise<MeInfo> {
+  return apiGet<MeInfo>("/api/me");
+}
+
+export async function changeOwnPassword(currentPassword: string, newPassword: string): Promise<void> {
+  await apiPost<{ updated: boolean }>("/api/me/password", {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
+export interface UserRecord {
+  id: number;
+  username: string;
+  is_admin: boolean;
+  created_at: number;
+}
+
+export async function listUsers(): Promise<UserRecord[]> {
+  return apiGet<UserRecord[]>("/api/users");
+}
+
+export async function createUser(
+  username: string,
+  password: string,
+  is_admin: boolean,
+): Promise<UserRecord> {
+  return apiPost<UserRecord>("/api/users", { username, password, is_admin });
+}
+
+export async function patchUser(
+  id: number,
+  patch: { is_admin?: boolean; password?: string },
+): Promise<UserRecord> {
+  return apiPatch<UserRecord>(`/api/users/${id}`, patch);
+}
+
+export async function deleteUser(id: number): Promise<void> {
+  await apiDelete<unknown>(`/api/users/${id}`);
 }
 
 /* ---------- Artist detail (custom endpoint) ---------- */

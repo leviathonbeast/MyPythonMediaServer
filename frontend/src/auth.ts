@@ -27,11 +27,13 @@
 const KEY_TOKEN = "muse.jwt";
 const KEY_USER  = "muse.username";
 const KEY_PASS  = "muse.password";
+const KEY_ADMIN = "muse.is_admin";
 
 export interface AuthState {
   token: string | null;
   username: string | null;
   password: string | null;
+  is_admin: boolean;
 }
 
 export function authState(): AuthState {
@@ -39,6 +41,7 @@ export function authState(): AuthState {
     token:    localStorage.getItem(KEY_TOKEN),
     username: localStorage.getItem(KEY_USER),
     password: localStorage.getItem(KEY_PASS),
+    is_admin: localStorage.getItem(KEY_ADMIN) === "1",
   };
 }
 
@@ -64,16 +67,22 @@ export async function login(username: string, password: string): Promise<void> {
     } catch { /* swallow */ }
     throw new Error(detail);
   }
-  const data = (await res.json()) as { token: string };
+  const data = (await res.json()) as { token: string; is_admin: boolean };
   localStorage.setItem(KEY_TOKEN, data.token);
   localStorage.setItem(KEY_USER, username);
   localStorage.setItem(KEY_PASS, password);
+  localStorage.setItem(KEY_ADMIN, data.is_admin ? "1" : "0");
+}
+
+export function updateStoredPassword(newPassword: string): void {
+  localStorage.setItem(KEY_PASS, newPassword);
 }
 
 export function signOut(): void {
   localStorage.removeItem(KEY_TOKEN);
   localStorage.removeItem(KEY_USER);
   localStorage.removeItem(KEY_PASS);
+  localStorage.removeItem(KEY_ADMIN);
   // Force a hard reload to clear any in-memory state held by views/player.
   // We only do this if we're not already on the login page to avoid loops.
   if (location.hash !== "#/login") {
