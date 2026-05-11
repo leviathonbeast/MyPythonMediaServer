@@ -225,12 +225,44 @@ export interface TranscodingPrefs {
   maxBitRate: number | null;
 }
 
-const PREFS_KEY = "muse.transcoding";
+// Preferences are namespaced by username so users sharing a browser don't
+// inherit each other's settings on login. The legacy un-namespaced key is
+// kept around for a single one-time migration; see _prefsKey() below.
+const PREFS_KEY_PREFIX = "muse.transcoding.";
+const PREFS_LEGACY_KEY = "muse.transcoding";
+
+/**
+ * Compute the localStorage key for the currently-authenticated user.
+ *
+ * Returns null if no user is signed in (in which case prefs read returns
+ * defaults and prefs write is a no-op — we don't want to bind one user's
+ * preferences to the empty/anonymous slot).
+ */
+function _prefsKey(): string | null {
+  const { username } = authState();
+  if (!username) return null;
+  return PREFS_KEY_PREFIX + username;
+}
 
 /** Read the user's saved preferences. Defaults to "auto" with no cap. */
 export function getTranscodingPrefs(): TranscodingPrefs {
+  const key = _prefsKey();
+  if (!key) return { format: "auto", maxBitRate: null };
+
+  // One-time migration: pre-namespace installs stored prefs under
+  // "muse.transcoding". If we find that and the current user has no
+  // namespaced entry, copy the legacy value over and remove the legacy
+  // key so subsequent users on the same browser don't inherit it.
+  if (localStorage.getItem(key) === null) {
+    const legacy = localStorage.getItem(PREFS_LEGACY_KEY);
+    if (legacy !== null) {
+      localStorage.setItem(key, legacy);
+      localStorage.removeItem(PREFS_LEGACY_KEY);
+    }
+  }
+
   try {
-    const raw = localStorage.getItem(PREFS_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return { format: "auto", maxBitRate: null };
     const p = JSON.parse(raw);
     return {
@@ -244,7 +276,9 @@ export function getTranscodingPrefs(): TranscodingPrefs {
 
 /** Persist the user's preferences. The next call to streamUrl() picks them up. */
 export function setTranscodingPrefs(prefs: TranscodingPrefs): void {
-  localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  const key = _prefsKey();
+  if (!key) return;  // not signed in — nothing to bind the prefs to
+  localStorage.setItem(key, JSON.stringify(prefs));
 }
 
 export interface TranscodingPolicy {
