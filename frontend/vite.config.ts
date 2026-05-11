@@ -13,11 +13,12 @@
 
 import { defineConfig } from "vite";
 
-const BACKEND = process.env.MUSE_BACKEND_URL ?? "http://127.0.0.1:4040";
+const BACKEND  = process.env.MUSE_BACKEND_URL  ?? "http://127.0.0.1:4040";
+const DEV_HOST = process.env.MUSE_FRONTEND_HOST ?? "0.0.0.0";
 
 export default defineConfig({
   server: {
-    host: "0.0.0.0",
+    host: DEV_HOST,
     port: 5173,
     strictPort: false,
     proxy: {

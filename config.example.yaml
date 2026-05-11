@@ -43,6 +43,10 @@ artwork_cache_dir: ./data/artwork
 
 # --- Scanner --------------------------------------------------------------- #
 
+# Whether to kick off a full scan on every server start.
+# Recommended: false in production (use the /api/scan endpoint or a cron job).
+scan_on_startup: false
+
 # Number of worker threads used to parse metadata in parallel.
 # 4-8 is a good range; metadata parsing is CPU-light but I/O-heavy.
 scanner_workers: 4
@@ -51,17 +55,33 @@ scanner_workers: 4
 # Larger = faster; smaller = more granular crash recovery.
 scanner_batch_size: 200
 
-# Whether to kick off a full scan on every server start.
-# Recommended: false in production (use the /api/scan endpoint or a cron).
-run_initial_scan: false
-
 # --- Streaming ------------------------------------------------------------- #
 
-# Path to ffmpeg. "ffmpeg" if it's on PATH, otherwise an absolute path.
+# Paths to ffmpeg and ffprobe. Use "ffmpeg"/"ffprobe" if they are on PATH,
+# or absolute paths for static builds or containers without system packages.
 ffmpeg_binary: ffmpeg
+ffprobe_binary: ffprobe
+
+# Master kill-switch for transcoding. When false, every stream request returns
+# the original file regardless of what the client asked for. Useful on
+# local-only installs where the transcoding CPU overhead isn't worth it.
+transcoding_enabled: true
+
+# Default format when the client doesn't request a specific one.
+# "raw" streams files in their original format without transcoding.
+# Set to "mp3" or "opus" to transcode by default (handy for mobile streaming).
+default_transcode_format: raw
+
+# Default bitrate (kbps) used when transcoding and the client didn't specify.
+default_transcode_bitrate: 192
+
+# Hard cap on the bitrate (kbps) the server will ever serve. Clients requesting
+# higher, or raw files above this rate, are transcoded down to this limit.
+# Unset (commented out) means no cap.
+# max_streaming_bitrate: 320
 
 # Buffer size for streaming chunks (bytes). 64 KB is a good default.
-streaming_chunk_size: 65536
+stream_chunk_size: 65536
 
 # --- Auth ------------------------------------------------------------------ #
 
@@ -72,12 +92,19 @@ admin_username: admin
 admin_password: admin
 
 # JWT signing secret for the web UI session tokens. CHANGE THIS to a long
-# random string in production. If left empty, Muse generates an ephemeral
-# one at startup (which logs out all users on every restart).
+# random string in production. If left as the default, a dev placeholder is
+# used — tokens survive restarts but are not safe for production.
 jwt_secret: ""
 
-# How long web-UI JWTs stay valid (seconds). Default: 30 days.
-jwt_ttl_seconds: 2592000
+# How long web-UI JWTs stay valid (hours). Default: 720 (30 days).
+jwt_expiry_hours: 720
+
+# --- External integrations ------------------------------------------------- #
+
+# Optional Last.fm API key. When set, artist pages show a short biography
+# fetched from Last.fm. Without it, artist pages work fine but show no bio.
+# Get a free key at https://www.last.fm/api/account/create
+# lastfm_api_key: ""
 
 # --- Network --------------------------------------------------------------- #
 
@@ -89,6 +116,9 @@ cors_origins:
 # Bind address and port. "0.0.0.0" listens on all interfaces.
 host: 0.0.0.0
 port: 4040
+
+# Display name sent to Subsonic clients (shown in some client UIs).
+server_name: Muse
 
 # --- Logging --------------------------------------------------------------- #
 

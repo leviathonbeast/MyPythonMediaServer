@@ -6,6 +6,7 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "skipLibCheck": true,
+    "types": ["node"],
 
     /* Strictness — we want the compiler to catch real bugs */
     "strict": true,

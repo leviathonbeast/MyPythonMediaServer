@@ -31,8 +31,21 @@ fi
 
 case "$MODE" in
   dev)
-    echo "→ Starting Muse (development, auto-reload)"
-    exec uvicorn backend.main:app --host 0.0.0.0 --port 4040 --reload
+    echo "→ Starting Muse backend (development, auto-reload)"
+    uvicorn backend.main:app --host 0.0.0.0 --port 4040 --reload &
+    BACKEND_PID=$!
+
+    echo "→ Starting Muse frontend (Vite dev server)"
+    if [ ! -d "frontend/node_modules" ]; then
+      echo "→ Installing frontend dependencies"
+      (cd frontend && npm install)
+    fi
+    HOST_IP=$(hostname -I | awk '{print $1}')
+    MUSE_FRONTEND_HOST="$HOST_IP" (cd frontend && npm run dev) &
+    FRONTEND_PID=$!
+
+    trap 'echo "→ Shutting down…"; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; wait' INT TERM EXIT
+    wait
     ;;
   prod|*)
     echo "→ Starting Muse"
