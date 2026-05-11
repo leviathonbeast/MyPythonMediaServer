@@ -125,6 +125,23 @@ def _migration_004_album_release_type(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_password_changed_at(conn: sqlite3.Connection) -> None:
+    """
+    Add `password_changed_at` to users so the admin UI can show when each
+    user last rotated their password. Backfill existing rows with their
+    `created_at` value — we don't know the real change date for accounts
+    that predate this column, but that's the best approximation.
+    """
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN password_changed_at INTEGER")
+    except Exception:
+        pass  # idempotent — column may already exist on a partial run
+    conn.execute(
+        "UPDATE users SET password_changed_at = created_at "
+        "WHERE password_changed_at IS NULL"
+    )
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 MIGRATIONS: List[Migration] = [
     (1, _migration_001_initial),
@@ -132,6 +149,7 @@ MIGRATIONS: List[Migration] = [
     (3, _migration_003_seed_music_folders),
     (4, _migration_004_album_release_type),
     (5, _migration_005_user_roles),
+    (6, _migration_006_password_changed_at),
 ]
 
 

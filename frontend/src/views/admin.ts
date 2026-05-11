@@ -66,6 +66,7 @@ async function refreshUsers(host: HTMLElement): Promise<void> {
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Username</th>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Role</th>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Joined</th>
+            <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Password set</th>
             <th style="border-bottom:1px solid var(--rule)"></th>
           </tr>
         </thead>
@@ -181,6 +182,9 @@ function userRowHtml(u: UserRecord, isSelf: boolean): string {
   const joined = u.created_at
     ? new Date(u.created_at * 1000).toLocaleDateString()
     : "—";
+  const pwChanged = u.password_changed_at
+    ? new Date(u.password_changed_at * 1000).toLocaleDateString()
+    : "—";
 
   const adminToggle = isSelf ? "" : u.is_admin
     ? `<button class="btn ghost" data-toggle-admin="${u.id}" data-make-admin="0"
@@ -206,6 +210,9 @@ function userRowHtml(u: UserRecord, isSelf: boolean): string {
       </td>
       <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-mono);font-size:var(--t-small);color:var(--muted);border-bottom:1px solid var(--rule)">
         ${escapeHtml(joined)}
+      </td>
+      <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-mono);font-size:var(--t-small);color:var(--muted);border-bottom:1px solid var(--rule)">
+        ${escapeHtml(pwChanged)}
       </td>
       <td style="padding:.75rem 0;border-bottom:1px solid var(--rule)">
         <div style="display:flex;gap:.4rem;justify-content:flex-end;flex-wrap:wrap">

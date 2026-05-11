@@ -41,7 +41,7 @@ case "$MODE" in
       (cd frontend && npm install)
     fi
     HOST_IP=$(hostname -I | awk '{print $1}')
-    MUSE_FRONTEND_HOST="$HOST_IP" (cd frontend && npm run dev) &
+    (cd frontend && MUSE_FRONTEND_HOST="$HOST_IP" npm run dev) &
     FRONTEND_PID=$!
 
     trap 'echo "→ Shutting down…"; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; wait' INT TERM EXIT

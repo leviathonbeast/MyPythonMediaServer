@@ -10,6 +10,7 @@ import {
   type ScanProgress, type GcResult, type MusicFolder,
   type TranscodingPolicy, type TranscodingPrefs, type TranscodingFormat,
 } from "../api";
+import { authState } from "../auth";
 import { fmtDuration } from "../player";
 import { escapeHtml } from "./_util";
 
@@ -25,18 +26,13 @@ let visibilityListener: (() => void) | undefined;
 const SCAN_POLL_INTERVAL_MS = 3000;
 
 export async function renderSettings(host: HTMLElement): Promise<void> {
-  host.innerHTML = `
-    <header class="page-head">
-      <h1>The <em>workshop</em></h1>
-      <div class="meta">— Library admin</div>
-    </header>
+  const isAdmin = authState().is_admin;
 
-    <div class="section-head">
-      <h2>Stats</h2>
-      <span class="rule"></span>
-    </div>
-    <div data-stats class="loading">Loading stats</div>
-
+  // Non-admins see the library stats and their per-browser streaming
+  // preferences, but not the folder management / scan / maintenance
+  // controls — those are gated server-side anyway, so showing them
+  // would only be visual noise that produces 403s on click.
+  const adminSections = !isAdmin ? "" : `
     <div class="section-head">
       <h2>Music folders</h2>
       <span class="rule"></span>
@@ -44,15 +40,9 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
     <div class="panel" data-folders>
       <div class="loading">Loading folders</div>
     </div>
+  `;
 
-    <div class="section-head">
-      <h2>Streaming</h2>
-      <span class="rule"></span>
-    </div>
-    <div class="panel" data-streaming>
-      <div class="loading">Loading transcoding policy</div>
-    </div>
-
+  const adminTrailingSections = !isAdmin ? "" : `
     <div class="section-head">
       <h2>Scan</h2>
       <span class="rule"></span>
@@ -84,10 +74,44 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
     </div>
   `;
 
+  host.innerHTML = `
+    <header class="page-head">
+      <h1>The <em>workshop</em></h1>
+      <div class="meta">— ${isAdmin ? "Library admin" : "Library stats & playback"}</div>
+    </header>
+
+    <div class="section-head">
+      <h2>Stats</h2>
+      <span class="rule"></span>
+    </div>
+    <div data-stats class="loading">Loading stats</div>
+
+    ${adminSections}
+
+    <div class="section-head">
+      <h2>Streaming</h2>
+      <span class="rule"></span>
+    </div>
+    <div class="panel" data-streaming>
+      <div class="loading">Loading transcoding policy</div>
+    </div>
+
+    ${adminTrailingSections}
+  `;
+
   await refreshStats(host);
-  await refreshFolders(host);
   await refreshStreaming(host);
-  await refreshScan(host);
+  if (isAdmin) {
+    await refreshFolders(host);
+    await refreshScan(host);
+  }
+
+  if (!isAdmin) {
+    // Nothing else to wire up — non-admins don't see the scan/maintenance
+    // controls so there are no buttons to bind.
+    (host as any).__cleanup = () => { /* noop */ };
+    return;
+  }
 
   host.querySelector<HTMLButtonElement>("[data-rescan]")?.addEventListener("click", async () => {
     try {

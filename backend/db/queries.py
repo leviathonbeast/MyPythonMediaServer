@@ -552,14 +552,14 @@ _USER_ROLE_COLS = (
 
 # Full user row including password_hash — only for auth/login paths.
 _USER_SELECT = (
-    "id, username, password_hash, is_admin, created_at, "
+    "id, username, password_hash, is_admin, created_at, password_changed_at, "
     + ", ".join(_USER_ROLE_COLS)
 )
 
 # Same but without password_hash — safe to return to the API layer / admin UI.
 # We never send hashes to the frontend.
 _USER_SELECT_NO_HASH = (
-    "id, username, is_admin, created_at, "
+    "id, username, is_admin, created_at, password_changed_at, "
     + ", ".join(_USER_ROLE_COLS)
 )
 
@@ -588,15 +588,15 @@ def create_user(
     cur = get_conn().execute(
         """
         INSERT INTO users (
-            username, password_hash, is_admin, created_at,
+            username, password_hash, is_admin, created_at, password_changed_at,
             email, scrobbling_enabled, max_bit_rate,
             settings_role, stream_role, download_role, upload_role,
             playlist_role, cover_art_role, comment_role, podcast_role,
             jukebox_role, share_role, video_conversion_role
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            username, password_hash, int(is_admin), now,
+            username, password_hash, int(is_admin), now, now,
             email, int(scrobbling_enabled), max_bit_rate,
             int(settings_role), int(stream_role), int(download_role), int(upload_role),
             int(playlist_role), int(cover_art_role), int(comment_role), int(podcast_role),
@@ -668,6 +668,9 @@ def update_user(
         params.append(cast(val) if cast else val)
 
     _add("password_hash",        password_hash)
+    # Stamp the rotation timestamp whenever the hash changes.
+    if password_hash is not None:
+        _add("password_changed_at", int(time.time()))
     _add("email",                email)
     _add("is_admin",             is_admin,             cast=int)
     _add("scrobbling_enabled",   scrobbling_enabled,   cast=int)
@@ -697,7 +700,8 @@ def update_user(
 def update_user_password(user_id: int, password_hash: str) -> bool:
     """Replace the stored password hash by id. Returns True if the user existed."""
     cur = get_conn().execute(
-        "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
+        "UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+        (password_hash, int(time.time()), user_id),
     )
     return cur.rowcount > 0
 

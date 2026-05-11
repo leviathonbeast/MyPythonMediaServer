@@ -563,6 +563,7 @@ export interface UserRecord {
   username: string;
   is_admin: boolean;
   created_at: number;
+  password_changed_at: number | null;
 }
 
 export async function listUsers(): Promise<UserRecord[]> {
