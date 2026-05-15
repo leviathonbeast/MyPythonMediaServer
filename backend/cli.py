@@ -87,8 +87,27 @@ def cmd_userlist(_: argparse.Namespace) -> int:
         return 0
     for u in users:
         flag = "admin" if u["is_admin"] else "user"
-        print(f"{u['id']:>4}  {flag:5}  {u['username']}")
+        status = "disabled" if u.get("disabled") else "active"
+        print(f"{u['id']:>4}  {flag:5}  {status:8}  {u['username']}")
     return 0
+
+
+def _set_disabled(username: str, disabled: bool) -> int:
+    user = queries.get_user_by_username(username)
+    if user is None:
+        sys.exit(f"No such user '{username}'")
+    with transaction():
+        queries.set_user_disabled(user["id"], disabled)
+    print(f"{'Disabled' if disabled else 'Enabled'} user '{username}'")
+    return 0
+
+
+def cmd_disable(args: argparse.Namespace) -> int:
+    return _set_disabled(args.username, True)
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    return _set_disabled(args.username, False)
 
 
 def main() -> int:
@@ -113,6 +132,14 @@ def main() -> int:
 
     p = sub.add_parser("userlist", help="List users")
     p.set_defaults(func=cmd_userlist)
+
+    p = sub.add_parser("disable", help="Disable a user (auth always fails)")
+    p.add_argument("username")
+    p.set_defaults(func=cmd_disable)
+
+    p = sub.add_parser("enable", help="Re-enable a previously disabled user")
+    p.add_argument("username")
+    p.set_defaults(func=cmd_enable)
 
     args = parser.parse_args()
     _bootstrap()

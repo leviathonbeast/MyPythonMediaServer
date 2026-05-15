@@ -186,6 +186,10 @@ def _verify_with_password(username: str, plaintext: str) -> Optional[Dict[str, A
     user = queries.get_user_by_username(username)
     if user is None:
         return None
+    if user.get("disabled"):
+        # Disabled accounts return the same failure as a wrong password so a
+        # caller can't probe which usernames are locked vs. nonexistent.
+        return None
     if not verify_password(plaintext, user["password_hash"]):
         return None
 
@@ -241,6 +245,8 @@ def _verify_with_token(username: str, token: str, salt: str) -> Optional[Dict[st
 
     user = queries.get_user_by_username(username)
     if user is None:
+        return None
+    if user.get("disabled"):
         return None
     return {"id": user["id"], "username": user["username"], "is_admin": bool(user["is_admin"])}
 

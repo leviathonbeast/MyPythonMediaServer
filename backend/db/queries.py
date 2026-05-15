@@ -1042,14 +1042,14 @@ _USER_ROLE_COLS = (
 
 # Full user row including password_hash and encrypted_password — auth paths only.
 _USER_SELECT = (
-    "id, username, password_hash, encrypted_password, is_admin, created_at, password_changed_at, "
+    "id, username, password_hash, encrypted_password, is_admin, disabled, created_at, password_changed_at, "
     + ", ".join(_USER_ROLE_COLS)
 )
 
 # Same but without password_hash — safe to return to the API layer / admin UI.
 # We never send hashes to the frontend.
 _USER_SELECT_NO_HASH = (
-    "id, username, is_admin, created_at, password_changed_at, "
+    "id, username, is_admin, disabled, created_at, password_changed_at, "
     + ", ".join(_USER_ROLE_COLS)
 )
 
@@ -1227,6 +1227,16 @@ def update_encrypted_password(user_id: int, value: Optional[str]) -> None:
         (value, user_id),
     )
     conn.commit()
+
+
+def set_user_disabled(user_id: int, disabled: bool) -> bool:
+    """Set or clear the disabled flag by id. Returns True if the user existed."""
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE users SET disabled = ? WHERE id = ?", (int(disabled), user_id)
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def set_user_admin(user_id: int, is_admin: bool) -> bool:

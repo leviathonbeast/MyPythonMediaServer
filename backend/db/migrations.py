@@ -227,6 +227,22 @@ def _migration_008_artist_image(conn: sqlite3.Connection) -> None:
         pass  # idempotent — column may already exist on a partial run
 
 
+def _migration_011_user_disabled(conn: sqlite3.Connection) -> None:
+    """
+    Add `disabled` flag to users so accounts can be locked without deletion.
+
+    Disabled users still exist in getUsers / getUser responses (the spec has
+    no notion of disabled), but auth always fails for them with the standard
+    ERR_AUTH (40) — indistinguishable from a wrong password to clients.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0"
+        )
+    except Exception:
+        pass  # idempotent — column may already exist on a partial run
+
+
 def _migration_010_play_queue(conn: sqlite3.Connection) -> None:
     """
     Per-user play queue for Subsonic savePlayQueue / getPlayQueue.
@@ -288,6 +304,7 @@ MIGRATIONS: List[Migration] = [
     (8, _migration_008_artist_image),
     (9, _migration_009_encrypted_password),
     (10, _migration_010_play_queue),
+    (11, _migration_011_user_disabled),
 ]
 
 
