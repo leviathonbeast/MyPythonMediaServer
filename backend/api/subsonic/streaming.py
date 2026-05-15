@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
-from urllib.parse import quote
 
 from fastapi import Depends, Query, Response, Request
 
@@ -27,8 +26,7 @@ def _resolve_track(
     Both endpoints need the same prelude: parse the Subsonic id, reject it if
     it isn't a track id, then fetch the track row. Returning (track, None) on
     success and (None, error_response) on failure lets each caller bail with
-    one `if err is not None: return err` line instead of duplicating the two
-    error branches.
+    one `if err is not None: return err` line instead of duplicating branches.
     """
     kind, rid = library.parse_id(id)
     if kind != "track":
@@ -53,31 +51,35 @@ def _resolve_track(
 
 
 @_double_register("stream")
-def stream(
+async def stream(
     request: Request,
     id: str = Query(...),
     maxBitRate: Optional[int] = Query(default=None, ge=0, le=2000),
     format: Optional[str] = Query(default=None),
+    timeOffset: Optional[float] = Query(default=None, ge=0),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """
     Audio streaming with optional on-the-fly transcoding.
 
-    Supports range requests (for raw streaming) and chunked transfer (for
-    transcoded streams).
+    Supports HTTP Range for raw streaming and seek-on-transcode via either
+    `?timeOffset=<seconds>` or a `Range: bytes=N-` header (the latter is
+    translated to a time offset using the target bitrate).
     """
     track, err = _resolve_track(id, ctx)
     if err is not None:
         return err
 
-    return stream_track(
+    return await stream_track(
         request=request,
         track_path=track["path"],
         track_suffix=track["suffix"],
         track_content_type=track["content_type"],
         track_bitrate=track.get("bitrate"),
+        track_duration=track.get("duration"),
         requested_format=format,
         requested_bitrate=maxBitRate,
+        time_offset=timeOffset,
     )
 
 
@@ -85,7 +87,7 @@ def stream(
 
 
 @_double_register("download")
-def download(
+async def download(
     request: Request,
     id: str = Query(...),
     ctx: SubsonicContext = Depends(subsonic_context),
@@ -93,16 +95,18 @@ def download(
     track, err = _resolve_track(id, ctx)
     if err is not None:
         return err
-    t = stream_track(
+
+    resp = await stream_track(
         request=request,
         track_path=track["path"],
         track_suffix=track["suffix"],
         track_content_type=track["content_type"],
         track_bitrate=track.get("bitrate"),
-        requested_format=None,  # never transcode on download
+        track_duration=track.get("duration"),
+        requested_format=None,  # download is always raw
         requested_bitrate=None,
     )
 
     filename = f"{track['title']}.{track['suffix']}"
-    t.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return t
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp

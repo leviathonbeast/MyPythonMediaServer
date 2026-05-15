@@ -1,40 +1,73 @@
 """
-HTTP range-aware audio streamer.
+HTTP audio streamer (async).
 
-Browsers (and many native clients) seek by sending `Range: bytes=N-` and
-expect HTTP 206 Partial Content. Without this, dragging the seek bar in
-the audio player won't work; the browser will be forced to re-download
-from the start.
+Three response shapes come out of this module:
 
-For transcoded streams we deliberately don't support Range — we'd have to
-re-run ffmpeg from a seek offset which is doable but adds complexity. Most
-clients fall back to streaming-from-start when Range isn't honoured.
+    * RAW, full file        — 200, with Content-Length.
+    * RAW, byte range       — 206, with Content-Range / Content-Length.
+    * TRANSCODED, with seek — 206, with a *synthesized* Content-Range/Length
+                              (byte positions are derived from target bitrate
+                              × source duration; accurate enough for browser
+                              seek bars, but not byte-exact).
+    * TRANSCODED, no seek   — 200, chunked, no length.
+
+Seek-on-transcode
+-----------------
+Two ways for the client to ask for a seek on a transcoded stream:
+
+    1. `?timeOffset=<seconds>` — Subsonic-style explicit seek.
+    2. `Range: bytes=N-`       — translated to a time offset via the target
+                                  bitrate (`seek = N / bytes_per_second`).
+
+Either way we pass `-ss <seconds>` to ffmpeg and start decoding from there.
+
+Policy
+------
+* `transcoding_enabled=False`  → raw, every time.
+* `format=raw` (or unset and `default_transcode_format=raw`) → raw.
+  Raw streams are NEVER bitrate-capped — the user opted in to the full file.
+* Anything else → transcoded, clamped to
+  `min(requested_bitrate, max_streaming_bitrate, MAX_TRANSCODE_BITRATE=320)`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
+from typing import AsyncIterator, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 
 from backend.config import get_settings
-from .presets import resolve_preset, TranscodePreset
+from .presets import MAX_TRANSCODE_BITRATE, TranscodePreset, resolve_preset
 from .transcoder import TranscodeStream
 
-# Range: bytes=START-END  (END optional, START required for our purposes)
+log = logging.getLogger(__name__)
+
+# Range: bytes=START-END  (END optional; we ignore multipart ranges — almost
+# no audio client uses those).
 _RANGE_RE = re.compile(r"bytes=(?P<start>\d+)-(?P<end>\d*)")
 
 
-def _parse_range(header: Optional[str], file_size: int) -> Optional[Tuple[int, int]]:
-    """
-    Parse a Range header. Returns (start, end_inclusive) or None if absent/malformed.
+# ---------------------------------------------------------------------------
+# Range parsing
+# ---------------------------------------------------------------------------
 
-    We handle the common cases and ignore multipart ranges (almost no client
-    uses those for audio).
+
+def _parse_range(
+    header: Optional[str], total_size: Optional[int]
+) -> Optional[Tuple[int, Optional[int]]]:
+    """
+    Parse a Range header. Returns `(start, end_inclusive_or_None)` or None.
+
+    For raw streaming `total_size` is the file's exact size; the returned
+    `end` is always a real byte index. For transcoded streaming we may pass
+    an *estimated* size (or None) — in that case `end` is whatever the client
+    asked for (possibly None for "to the end").
     """
     if not header:
         return None
@@ -42,143 +75,255 @@ def _parse_range(header: Optional[str], file_size: int) -> Optional[Tuple[int, i
     if not m:
         return None
     start = int(m.group("start"))
-    end = int(m.group("end")) if m.group("end") else file_size - 1
-    if start >= file_size or end < start:
-        return None
-    end = min(end, file_size - 1)
-    return start, end
+    end_str = m.group("end")
+    if total_size is not None:
+        end = int(end_str) if end_str else total_size - 1
+        if start >= total_size or end < start:
+            return None
+        return start, min(end, total_size - 1)
+    return start, (int(end_str) if end_str else None)
 
 
-def _file_chunks(path: str, start: int, end: int, chunk_size: int) -> Iterator[bytes]:
+# ---------------------------------------------------------------------------
+# Async file iteration (raw path)
+# ---------------------------------------------------------------------------
+
+
+async def _async_file_chunks(
+    path: str, start: int, end: int, chunk_size: int
+) -> AsyncIterator[bytes]:
     """
-    Yield bytes [start, end] (inclusive) from a file in chunk_size pieces.
+    Yield bytes `[start, end]` inclusive from `path` without blocking the loop.
 
-    We use plain file IO. For NAS-backed paths this is async-friendly because
-    FastAPI runs streaming responses in a thread pool by default — the read()
-    blocks the worker, not the event loop.
+    We use plain blocking file IO inside `asyncio.to_thread`. For NAS-backed
+    paths a syscall can stall for tens of ms; running it on a worker keeps the
+    event loop responsive for other requests.
     """
     remaining = end - start + 1
-    with open(path, "rb") as f:
-        f.seek(start)
+    f = await asyncio.to_thread(open, path, "rb")
+    try:
+        await asyncio.to_thread(f.seek, start)
         while remaining > 0:
-            data = f.read(min(chunk_size, remaining))
+            data = await asyncio.to_thread(f.read, min(chunk_size, remaining))
             if not data:
                 break
             remaining -= len(data)
             yield data
+    finally:
+        await asyncio.to_thread(f.close)
 
 
-def stream_track(
+# ---------------------------------------------------------------------------
+# Server-side policy
+# ---------------------------------------------------------------------------
+
+
+def _apply_policy(
+    requested_format: Optional[str],
+    requested_bitrate: Optional[int],
+) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Decide what (format, bitrate) we'll actually serve given the client ask.
+
+    Returns `(None, None)` to mean "stream the original file" — raw is the
+    only thing that ever bypasses the bitrate ceiling.
+    """
+    settings = get_settings()
+
+    if not settings.transcoding_enabled:
+        return None, None
+
+    fmt = (requested_format or settings.default_transcode_format or "raw").lower()
+    if fmt == "raw":
+        return None, None
+
+    cap = MAX_TRANSCODE_BITRATE
+    if settings.max_streaming_bitrate is not None:
+        cap = min(cap, settings.max_streaming_bitrate)
+
+    if requested_bitrate is None:
+        bitrate = min(settings.default_transcode_bitrate, cap)
+    else:
+        bitrate = min(requested_bitrate, cap)
+
+    return fmt, bitrate
+
+
+# ---------------------------------------------------------------------------
+# Top-level entry point
+# ---------------------------------------------------------------------------
+
+
+async def stream_track(
     request: Request,
     track_path: str,
     track_suffix: str,
     track_content_type: str,
     track_bitrate: Optional[int],
+    track_duration: Optional[float] = None,
     requested_format: Optional[str] = None,
     requested_bitrate: Optional[int] = None,
+    time_offset: Optional[float] = None,
 ) -> Response:
     """
-    Build the HTTP response for a /stream request.
+    Build the HTTP response for a /stream (or /download) request.
 
-    Returns a 206 with byte ranges for raw streaming, or a 200 chunked
-    response when transcoding (no length, no seek — a deliberate trade-off).
+    `track_duration` is the source length in seconds; we use it to synthesize
+    valid Content-Range / Content-Length headers on seek-on-transcode requests.
+    Without it, transcoded seek still works but the response is 200 chunked.
     """
     settings = get_settings()
 
     if not Path(track_path).is_file():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    # ---- Server-side policy -------------------------------------------
-    # Three knobs the operator controls (config.yaml or env vars):
-    #   1. transcoding_enabled  — global kill-switch
-    #   2. default_transcode_format — what to send if the client didn't ask
-    #   3. max_streaming_bitrate — hard cap on the bitrate we'll serve
-    #
-    # The order matters. We apply defaults first, then enforce the cap.
-    if not settings.transcoding_enabled:
-        # Strict raw mode. The client's requests are politely ignored.
-        requested_format = None
-        requested_bitrate = None
-    else:
-        # Fill in the default if the client didn't ask. "raw" is the
-        # special value resolve_preset() interprets as "no transcoding".
-        if not requested_format:
-            requested_format = settings.default_transcode_format
-
-        # Cap the requested bitrate. If the client asked for none, the
-        # cap still pulls them down to it when the source exceeds it
-        # (handled below by injecting it as the request).
-        cap = settings.max_streaming_bitrate
-        if cap is not None:
-            if requested_bitrate is None or requested_bitrate > cap:
-                requested_bitrate = cap
-            # If the source itself is over the cap and the client wanted
-            # raw, we can't give them raw — force a re-encode to mp3@cap.
-            if (
-                (requested_format in (None, "raw"))
-                and track_bitrate
-                and track_bitrate > cap
-            ):
-                requested_format = "mp3"
-
-    preset: Optional[TranscodePreset] = resolve_preset(
-        requested_format=requested_format,
-        requested_bitrate=requested_bitrate,
+    fmt, bitrate = _apply_policy(requested_format, requested_bitrate)
+    preset = resolve_preset(
+        requested_format=fmt,
+        requested_bitrate=bitrate,
         source_format=track_suffix,
         source_bitrate=track_bitrate,
         default_bitrate=settings.default_transcode_bitrate,
     )
 
-    # ---- Transcoding path ------------------------------------------------
     if preset is not None:
-        # No length, no range — chunked. Most clients accept this.
-        ts = TranscodeStream(track_path, preset, chunk_size=settings.stream_chunk_size)
-        # We open the context here and close it inside the generator. FastAPI
-        # consumes the generator; if the client disconnects, StarletteResponse
-        # raises GeneratorExit which our `finally` in TranscodeStream catches.
-        ts.__enter__()
-
-        def gen():
-            try:
-                yield from ts.iter_chunks()
-            finally:
-                ts.__exit__(None, None, None)
-
-        return StreamingResponse(
-            gen(),
-            media_type=preset.content_type,
-            headers={"Accept-Ranges": "none", "Cache-Control": "no-cache"},
+        return await _build_transcoded_response(
+            request=request,
+            preset=preset,
+            track_path=track_path,
+            track_duration=track_duration,
+            time_offset=time_offset,
+            chunk_size=settings.stream_chunk_size,
         )
 
-    # ---- Raw / range path ------------------------------------------------
-    file_size = os.path.getsize(track_path)
+    return await _build_raw_response(
+        request=request,
+        track_path=track_path,
+        track_content_type=track_content_type,
+        chunk_size=settings.stream_chunk_size,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Raw path
+# ---------------------------------------------------------------------------
+
+
+async def _build_raw_response(
+    request: Request,
+    track_path: str,
+    track_content_type: str,
+    chunk_size: int,
+) -> Response:
+    file_size = await asyncio.to_thread(os.path.getsize, track_path)
     rng = _parse_range(request.headers.get("range"), file_size)
 
-    common_headers = {
+    common = {
         "Accept-Ranges": "bytes",
         "Content-Type": track_content_type,
         "Cache-Control": "no-cache",
     }
 
     if rng is None:
-        # Full file. Still chunked, but with content-length so progress bars
-        # and "download" actions in browsers know the size.
         return StreamingResponse(
-            _file_chunks(track_path, 0, file_size - 1, settings.stream_chunk_size),
+            _async_file_chunks(track_path, 0, file_size - 1, chunk_size),
             status_code=200,
             media_type=track_content_type,
-            headers={**common_headers, "Content-Length": str(file_size)},
+            headers={**common, "Content-Length": str(file_size)},
         )
 
-    start, end = rng
-    length = end - start + 1
+    start, end = rng  # end is non-None here because we passed a real size
+    assert end is not None
     return StreamingResponse(
-        _file_chunks(track_path, start, end, settings.stream_chunk_size),
+        _async_file_chunks(track_path, start, end, chunk_size),
         status_code=206,
         media_type=track_content_type,
         headers={
-            **common_headers,
-            "Content-Length": str(length),
+            **common,
+            "Content-Length": str(end - start + 1),
             "Content-Range": f"bytes {start}-{end}/{file_size}",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Transcoded path
+# ---------------------------------------------------------------------------
+
+
+async def _build_transcoded_response(
+    request: Request,
+    preset: TranscodePreset,
+    track_path: str,
+    track_duration: Optional[float],
+    time_offset: Optional[float],
+    chunk_size: int,
+) -> Response:
+    """
+    Spawn ffmpeg, stream its stdout. Honour `time_offset` and HTTP Range as seek.
+    """
+    bytes_per_second = preset.bitrate * 1000 // 8  # kbps → bytes/s
+    estimated_total: Optional[int] = (
+        int(track_duration * bytes_per_second) if track_duration else None
+    )
+
+    rng = _parse_range(request.headers.get("range"), estimated_total)
+    rng_start = rng[0] if rng else None
+    rng_end = rng[1] if rng else None
+
+    # Explicit timeOffset wins. Otherwise derive seek from the Range start byte.
+    if time_offset is not None and time_offset > 0:
+        seek_seconds = float(time_offset)
+    elif rng_start:
+        seek_seconds = rng_start / bytes_per_second
+    else:
+        seek_seconds = 0.0
+
+    ts = TranscodeStream(
+        track_path,
+        preset,
+        chunk_size=chunk_size,
+        start_seconds=seek_seconds,
+    )
+    # Enter the context here so subprocess-spawn errors surface as HTTP errors
+    # rather than mid-stream interruptions. The generator below handles exit.
+    await ts.__aenter__()
+
+    async def gen() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in ts.iter_chunks():
+                yield chunk
+        finally:
+            await ts.__aexit__(None, None, None)
+
+    common = {
+        "Content-Type": preset.content_type,
+        "Cache-Control": "no-cache",
+    }
+
+    # Synthesized 206 when the client asked for a seek and we know the duration.
+    if rng_start is not None and estimated_total is not None:
+        end = rng_end if rng_end is not None else estimated_total - 1
+        length = max(0, end - rng_start + 1)
+        return StreamingResponse(
+            gen(),
+            status_code=206,
+            media_type=preset.content_type,
+            headers={
+                **common,
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {rng_start}-{end}/{estimated_total}",
+                "Content-Length": str(length),
+            },
+        )
+
+    # No seek, or no duration to synthesize ranges from → chunked.
+    return StreamingResponse(
+        gen(),
+        status_code=200,
+        media_type=preset.content_type,
+        headers={
+            **common,
+            "Accept-Ranges": "bytes" if estimated_total else "none",
         },
     )
