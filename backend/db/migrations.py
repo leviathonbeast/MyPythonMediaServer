@@ -336,6 +336,50 @@ def _migration_014_resort_apple_music_style(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_015_performance_indexes(conn: sqlite3.Connection) -> None:
+    """
+    Indexes for queries that EXPLAIN QUERY PLAN showed as full-table SCANs.
+
+    What and why:
+      * tracks(genre): list_song_by_genre, list_random_songs (genre filter),
+        list_genre_count all currently scan tracks. Partial index because
+        most rows have a non-NULL genre and the index is half the size.
+      * tracks(year): list_random_songs year filter.
+      * tracks(album_id) covering on (cover_art_id, year, created_at):
+        the artists-index "pick the best cover for this artist" lookup
+        becomes index-only with the rewrite in queries.py.
+      * play_counts(track_id): frequent/recent album sort joins
+        play_counts on track_id; without this SQLite builds an automatic
+        temp index every call (visible in EXPLAIN as 'AUTOMATIC COVERING INDEX').
+      * starred(user_id, starred_at DESC): get_starred_items orders by
+        starred_at DESC for a single user; the composite avoids a temp sort.
+      * idx_tracks_path is redundant — the UNIQUE constraint already
+        provides an index on path. Drop to save space and write overhead.
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tracks_genre "
+        "ON tracks(genre COLLATE NOCASE) WHERE genre IS NOT NULL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_year ON tracks(year)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_play_counts_track ON play_counts(track_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_starred_user_at "
+        "ON starred(user_id, starred_at DESC)"
+    )
+    # Composite that lets the artist-index cover-art lookup hit a single
+    # index without touching the table rows.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_albums_artist_year "
+        "ON albums(artist_id, year DESC, created_at DESC)"
+    )
+    # Drop the duplicate path index — UNIQUE(path) already covers lookups.
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_path")
+    # ANALYZE updates the planner stats so the new indexes are actually used.
+    conn.execute("ANALYZE")
+
+
 def _migration_013_resort_symbols_last(conn: sqlite3.Connection) -> None:
     """Re-backfill albums.sort_name so symbol-leading names sort after Z.
 
@@ -369,6 +413,7 @@ MIGRATIONS: List[Migration] = [
     (12, _migration_012_album_sort_name),
     (13, _migration_013_resort_symbols_last),
     (14, _migration_014_resort_apple_music_style),
+    (15, _migration_015_performance_indexes),
 ]
 
 

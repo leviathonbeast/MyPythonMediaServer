@@ -87,6 +87,13 @@ def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connecti
     # for the very brief windows where two writers contend (e.g. scanner
     # commit + a user updating their playlist at the same instant).
     conn.execute("PRAGMA busy_timeout = 10000;")
+    # Memory-mapped IO for reads. SQLite serves index/table pages straight
+    # from the kernel page cache without a userspace copy. 256 MB is plenty
+    # for libraries up to ~500k tracks; the OS reclaims it under pressure.
+    conn.execute("PRAGMA mmap_size = 268435456;")
+    # Keep TEMP B-TREEs (group-by/order-by spill, automatic indexes) in RAM
+    # rather than on disk. Affects every aggregating browse query.
+    conn.execute("PRAGMA temp_store = MEMORY;")
     return conn
 
 

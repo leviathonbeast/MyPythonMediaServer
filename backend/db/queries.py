@@ -525,21 +525,23 @@ def upsert_artist(name: str, sort_name: Optional[str] = None) -> int:
     """Insert artist if missing, return id.
 
     Used by the scanner. Lower-case dedup key means "AC/DC" and "ac/dc" merge.
+
+    Performance: SQLite 3.35+ RETURNING lets us collapse the previous
+    INSERT-then-SELECT into one round trip. The `DO UPDATE SET name_lower
+    = name_lower` is a no-op upsert — required because DO NOTHING skips
+    RETURNING, while DO UPDATE always returns the row whether it was
+    inserted or already there.
     """
     name_lower = name.strip().lower()
     sort_name = sort_name or name
-    conn = get_conn()
-    # The UNIQUE on name_lower lets us use ON CONFLICT to dedup atomically.
-    conn.execute(
+    row = get_conn().execute(
         """
         INSERT INTO artists (name, name_lower, sort_name)
         VALUES (?, ?, ?)
-        ON CONFLICT(name_lower) DO NOTHING
+        ON CONFLICT(name_lower) DO UPDATE SET name_lower = artists.name_lower
+        RETURNING id
         """,
         (name, name_lower, sort_name),
-    )
-    row = conn.execute(
-        "SELECT id FROM artists WHERE name_lower = ?", (name_lower,)
     ).fetchone()
     return int(row["id"])
 
@@ -549,19 +551,34 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
 
     Subsonic's getIndexes wants this exact shape. Numbers and symbols go
     into a "#" bucket.
+
+    Performance:
+      * `album_count` comes from the denormalized column on artists, so
+        there's no GROUP BY / JOIN-and-count over albums. WHERE album_count
+        > 0 filters out the empty Various-Artists sentinel.
+      * The "newest album cover" pick is done with a ROW_NUMBER() window
+        scanned ONCE over the albums table instead of a per-artist
+        correlated subquery. EXPLAIN QUERY PLAN previously showed
+        'CORRELATED SCALAR SUBQUERY' firing once per artist; the rewrite
+        runs the album scan once total.
     """
     rows = get_conn().execute("""
-        SELECT a.id, a.name, COUNT(al.id) AS album_count,
-               COALESCE(a.sort_name, a.name) AS sort_name,
-               (SELECT al2.cover_art_id
-                  FROM albums al2
-                 WHERE al2.artist_id = a.id
-                   AND al2.cover_art_id IS NOT NULL
-              ORDER BY al2.year DESC, al2.created_at DESC
-                 LIMIT 1) AS cover_art_id
+        SELECT a.id,
+               a.name,
+               a.album_count                       AS album_count,
+               COALESCE(a.sort_name, a.name)       AS sort_name,
+               cv.cover_art_id                     AS cover_art_id
           FROM artists a
-          JOIN albums al ON al.artist_id = a.id
-      GROUP BY a.id, a.name, a.sort_name
+     LEFT JOIN (
+                 SELECT artist_id, cover_art_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY artist_id
+                            ORDER BY year DESC, created_at DESC
+                        ) AS rn
+                   FROM albums
+                  WHERE cover_art_id IS NOT NULL
+               ) cv ON cv.artist_id = a.id AND cv.rn = 1
+         WHERE a.album_count > 0
       ORDER BY sort_name COLLATE NOCASE
         """).fetchall()
 
@@ -650,9 +667,12 @@ def upsert_album(
     """
     name_lower = name.strip().lower()
     sort_name = normalize_sort_name(name)
-    conn = get_conn()
     now = int(time.time())
-    conn.execute(
+    # RETURNING collapses INSERT-then-SELECT into one round trip. The
+    # COALESCEs in DO UPDATE preserve existing values when the new row
+    # has NULLs, so a tag-less file followed by a tagged one fills in
+    # year/genre/release_type instead of clobbering them.
+    row = get_conn().execute(
         """
         INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -660,12 +680,9 @@ def upsert_album(
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
             release_type = COALESCE(excluded.release_type, albums.release_type)
+        RETURNING id
         """,
         (artist_id, name, name_lower, sort_name, year, genre, release_type, now),
-    )
-    row = conn.execute(
-        "SELECT id FROM albums WHERE artist_id = ? AND name_lower = ?",
-        (artist_id, name_lower),
     ).fetchone()
     return int(row["id"])
 
@@ -702,29 +719,15 @@ def list_albums(
     Subsonic supports many; we ship the most useful ones and stub the others
     to alpha-by-name.
 
-    NOTE: random uses ORDER BY RANDOM() which is fine for libraries up to a
-    few hundred thousand albums but not great beyond that. For huge libraries,
-    pre-compute a random sample table or use rowid sampling.
+    Performance:
+      * frequent/recent used to run a correlated scalar subquery per album:
+        for every album row in the LIMIT we'd scan its tracks + play_counts.
+        With 50 albums in the result that's 50 sub-scans. We now JOIN against
+        a single grouped CTE that aggregates play_counts once.
+      * random uses ORDER BY RANDOM() which is fine for libraries up to a
+        few hundred thousand albums but not great beyond that. For huge
+        libraries pre-compute a random sample table or use rowid sampling.
     """
-    order_clause = {
-        "newest": "al.created_at DESC",
-        "alphabeticalByName": "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
-        "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
-        "byYear": "al.year ASC, COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
-        "byGenre": "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
-        "random": "RANDOM()",
-        "frequent": (
-            "(SELECT COALESCE(SUM(pc.play_count), 0) FROM tracks t "
-            " JOIN play_counts pc ON pc.track_id = t.id "
-            " WHERE t.album_id = al.id) DESC"
-        ),
-        "recent": (
-            "(SELECT COALESCE(MAX(pc.last_played), 0) FROM tracks t "
-            " JOIN play_counts pc ON pc.track_id = t.id "
-            " WHERE t.album_id = al.id) DESC"
-        ),
-    }.get(list_type, "al.name COLLATE NOCASE ASC")
-
     where_clauses: List[str] = []
     params: List[Any] = []
 
@@ -739,22 +742,49 @@ def list_albums(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-    rows = (
-        get_conn()
-        .execute(
-            f"""
-        SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
-               al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
-          FROM albums al
-          JOIN artists ar ON ar.id = al.artist_id
-         {where_sql}
-      ORDER BY {order_clause}
-         LIMIT ? OFFSET ?
-        """,
-            (*params, size, offset),
-        )
-        .fetchall()
-    )
+    # frequent/recent need play-count aggregation; everything else is a
+    # straight albums-table scan. Keep them on separate code paths so the
+    # planner only sees the join when it has to.
+    if list_type in ("frequent", "recent"):
+        agg = "SUM(pc.play_count)" if list_type == "frequent" else "MAX(pc.last_played)"
+        sql = f"""
+            WITH album_plays AS (
+                SELECT t.album_id AS aid, {agg} AS sort_key
+                  FROM tracks t
+                  JOIN play_counts pc ON pc.track_id = t.id
+                 WHERE t.album_id IS NOT NULL
+              GROUP BY t.album_id
+            )
+            SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
+                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+              FROM albums al
+              JOIN artists ar ON ar.id = al.artist_id
+         LEFT JOIN album_plays ap ON ap.aid = al.id
+             {where_sql}
+          ORDER BY COALESCE(ap.sort_key, 0) DESC
+             LIMIT ? OFFSET ?
+        """
+    else:
+        order_clause = {
+            "newest":               "al.created_at DESC",
+            "alphabeticalByName":   "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
+            "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
+            "byYear":               "al.year ASC, COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
+            "byGenre":              "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
+            "random":               "RANDOM()",
+        }.get(list_type, "al.name COLLATE NOCASE ASC")
+
+        sql = f"""
+            SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
+                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+              FROM albums al
+              JOIN artists ar ON ar.id = al.artist_id
+             {where_sql}
+          ORDER BY {order_clause}
+             LIMIT ? OFFSET ?
+        """
+
+    rows = get_conn().execute(sql, (*params, size, offset)).fetchall()
     return _rows_to_dicts(rows)
 
 
@@ -1040,21 +1070,24 @@ def cleanup_empty_albums_and_artists() -> Tuple[int, int]:
     """Remove albums with 0 tracks and artists with 0 albums.
 
     Run after a scan that deleted tracks. Returns (albums_deleted, artists_deleted).
+
+    Performance: switched from `id NOT IN (SELECT ...)` to NOT EXISTS. The
+    NOT IN form forces SQLite to materialise the whole inner result; the
+    correlated NOT EXISTS lets it short-circuit per outer row using the
+    existing idx_tracks_album / idx_albums_artist indexes.
     """
     conn = get_conn()
     cur = conn.execute("""
         DELETE FROM albums
-         WHERE id NOT IN (
-             SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL
+         WHERE NOT EXISTS (
+             SELECT 1 FROM tracks WHERE tracks.album_id = albums.id
          )
         """)
     albums_deleted = cur.rowcount
     cur = conn.execute("""
         DELETE FROM artists
-         WHERE id NOT IN (SELECT DISTINCT artist_id FROM albums)
-           AND id NOT IN (
-               SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL
-           )
+         WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artist_id = artists.id)
+           AND NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.artist_id = artists.id)
         """)
     artists_deleted = cur.rowcount
     return albums_deleted, artists_deleted
