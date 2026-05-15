@@ -22,6 +22,7 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -30,9 +31,41 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 from backend.config import get_settings
+
+
+# ---------------------------------------------------------------------------
+# TODO: scrobble-through to users' Last.fm accounts
+# ---------------------------------------------------------------------------
+# The signing helper below (_sign_params) is the one bit of glue every
+# Last.fm write method needs. To finish the feature you'll need:
+#
+#   1. Schema migration adding `lastfm_session_key TEXT` to the users table.
+#      One key per user — Last.fm session keys don't expire, so this is a
+#      one-time authorize step per user.
+#
+#   2. An auth flow to obtain that session key. Two options:
+#        a) Web auth: redirect user to last.fm/api/auth?api_key=...&cb=...
+#           then exchange the returned token via auth.getSession.
+#        b) Mobile auth: ask user for their Last.fm username + password,
+#           POST to auth.getMobileSession (signed). Simpler UX, but stores
+#           credentials in transit even if briefly.
+#
+#   3. Endpoints/UI on the profile page: "Link Last.fm account" button +
+#       "Unlink" + status indicator.
+#
+#   4. Wire scrobble() into /rest/scrobble:
+#        - On submission=true (track finished): call track.scrobble.
+#        - On submission=false (track started): call track.updateNowPlaying.
+#      Per spec, scrobble only on tracks > 30s and after >50% played or 4min.
+#
+#   5. (Optional) Wire love()/unlove() into /rest/star + /rest/unstar.
+#
+# All write methods are POSTs to the same _LASTFM_BASE URL with form-encoded
+# params PLUS an `api_sig` field containing the MD5 of the sorted params.
+# ---------------------------------------------------------------------------
 
 log = logging.getLogger(__name__)
 
@@ -179,3 +212,31 @@ def _html_to_text(s: str) -> str:
     s = html.unescape(s)
     s = _WS_RE.sub(" ", s).strip()
     return s
+
+
+# ---------------------------------------------------------------------------
+# Signing helper for write methods (scrobble, love, getSession, ...).
+# ---------------------------------------------------------------------------
+
+def _sign_params(params: Dict[str, str], shared_secret: str) -> str:
+    """
+    Return the api_sig value for a Last.fm write request.
+
+    Algorithm (per https://www.last.fm/api/desktopauth#_6-sign-your-call):
+      1. Take every parameter except `format` and `callback`.
+      2. Sort by key (lexicographic).
+      3. Concatenate as "key1value1key2value2...".
+      4. Append the shared secret.
+      5. MD5 of the resulting bytes (UTF-8). Hex digest, lowercase.
+
+    Returns the hex digest string. Caller is responsible for adding it as
+    `api_sig` to the outgoing form body and sending the request as a POST.
+    """
+    parts: list[str] = []
+    for k in sorted(params):
+        if k in ("format", "callback"):
+            continue
+        parts.append(k)
+        parts.append(params[k])
+    parts.append(shared_secret)
+    return hashlib.md5("".join(parts).encode("utf-8")).hexdigest()

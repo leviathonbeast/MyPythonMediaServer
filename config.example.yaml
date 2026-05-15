@@ -117,6 +117,11 @@ auth_rate_limits: "5/minute"
 # Get a free key at https://www.last.fm/api/account/create
 # lastfm_api_key: ""
 
+# Last.fm shared secret. Only needed for scrobble-through and "love" sync —
+# read-only artist bios above use the api_key alone. Currently parsed but
+# unused; safe to leave commented out until scrobbling support ships.
+# lastfm_shared_secret: ""
+
 # --- Network --------------------------------------------------------------- #
 
 # CORS origins for the web UI. List EVERY origin (scheme + host + port) that

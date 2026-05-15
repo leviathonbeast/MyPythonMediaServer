@@ -178,6 +178,13 @@ class Settings(BaseSettings):
     # Get a key (free, instant) at https://www.last.fm/api/account/create
     lastfm_api_key: Optional[str] = Field(default=None)
 
+    # Last.fm shared secret. Required ONLY for write methods (track.scrobble,
+    # track.love) — read methods like artist.getInfo work with the api_key
+    # alone. Wired into core.lastfm._sign_params(); not yet referenced by any
+    # endpoint. See the TODO at the top of core/lastfm.py for the rest of the
+    # work needed to enable scrobble-through to users' Last.fm accounts.
+    lastfm_shared_secret: Optional[str] = Field(default=None)
+
     # ---- Misc --------------------------------------------------------------
     # Subsonic API version we claim to implement. Real Subsonic is at 1.16.1
     # at time of writing; we report what we actually support.
