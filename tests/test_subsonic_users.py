@@ -4,75 +4,16 @@ Subsonic user-management endpoint tests.
 Tests the /rest/* user management endpoints per the OpenSubsonic 1.16.1 spec:
   - getUser, getUsers, createUser, updateUser, deleteUser, changePassword
   - getOpenSubsonicExtensions (public, no auth)
-  - OpenSubsonic response envelope fields on every response
+
+Envelope conformance is covered by tests/test_subsonic_compliance.py —
+TestEnvelopeConformance there parametrizes every endpoint.
 """
 
 from __future__ import annotations
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _sub(client, endpoint, admin=True, **params):
-    """Make a GET request to /rest/{endpoint} with Subsonic auth params."""
-    username = "admin" if admin else "regular"
-    password = "adminpass" if admin else "userpass"
-    return client.get(
-        f"/rest/{endpoint}",
-        params={"u": username, "p": password, "v": "1.16.1", "c": "pytest", "f": "json", **params},
-    )
-
-
-def _ok(r):
-    assert r.status_code == 200
-    body = r.json()["subsonic-response"]
-    assert body["status"] == "ok", f"Expected ok, got: {body}"
-    return body
-
-
-def _err(r):
-    assert r.status_code == 200
-    body = r.json()["subsonic-response"]
-    assert body["status"] == "failed", f"Expected failed, got: {body}"
-    return body
-
-
-# ---------------------------------------------------------------------------
-# OpenSubsonic envelope
-# ---------------------------------------------------------------------------
-
-class TestOpenSubsonicEnvelope:
-    def test_envelope_has_opensubsonic_true(self, client):
-        r = client.get("/rest/ping", params={
-            "u": "admin", "p": "adminpass", "v": "1.16.1", "c": "test", "f": "json"
-        })
-        body = r.json()["subsonic-response"]
-        assert body["openSubsonic"] is True
-
-    def test_envelope_has_type(self, client):
-        r = client.get("/rest/ping", params={
-            "u": "admin", "p": "adminpass", "v": "1.16.1", "c": "test", "f": "json"
-        })
-        body = r.json()["subsonic-response"]
-        assert "type" in body and body["type"]
-
-    def test_envelope_has_server_version(self, client):
-        r = client.get("/rest/ping", params={
-            "u": "admin", "p": "adminpass", "v": "1.16.1", "c": "test", "f": "json"
-        })
-        body = r.json()["subsonic-response"]
-        assert "serverVersion" in body and body["serverVersion"]
-
-    def test_error_envelope_has_opensubsonic_true(self, client):
-        r = client.get("/rest/ping", params={
-            "u": "nobody", "p": "wrong", "v": "1.16.1", "c": "test", "f": "json"
-        })
-        body = r.json()["subsonic-response"]
-        assert body["status"] == "failed"
-        assert body.get("openSubsonic") is True
+from ._subsonic import sub as _sub, ok as _ok, err as _err
 
 
 # ---------------------------------------------------------------------------

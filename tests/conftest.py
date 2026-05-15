@@ -40,6 +40,8 @@ the same reason — slow hashing would make the test suite take minutes.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -152,3 +154,64 @@ def admin_headers(admin_token) -> dict:
 @pytest.fixture()
 def user_headers(user_token) -> dict:
     return {"Authorization": f"Bearer {user_token}"}
+
+
+# ---------------------------------------------------------------------------
+# Seeded library: 1 folder → 1 artist → 1 album → 1 track.
+# Use for tests that need real ids to query against.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def seeded_library(client):
+    """
+    Seed a minimal library and return its ids.
+
+    Yields a dict with both the internal integer ids and the Subsonic-prefixed
+    string ids (``ar-N``, ``al-N``, ``tr-N``) that real clients send. Calls
+    update_*_aggregates so denormalized counts on artist/album rows are
+    consistent — tests that exercise list_artists_indexed or library_stats
+    rely on them being populated.
+    """
+    now = int(time.time())
+    with transaction():
+        folder_id = queries.add_music_folder(
+            name="test", path="/test/fixtures/music"
+        )
+        artist_id = queries.upsert_artist("Test Artist", sort_name="Test Artist")
+        album_id = queries.upsert_album(
+            artist_id=artist_id,
+            name="Test Album",
+            year=2024,
+            genre="Indie",
+            release_type="album",
+        )
+        track_id = queries.upsert_track({
+            "album_id":        album_id,
+            "artist_id":       artist_id,
+            "music_folder_id": folder_id,
+            "path":            "/test/fixtures/music/song.mp3",
+            "title":           "Test Song",
+            "track_number":    1,
+            "disc_number":     1,
+            "duration":        180,
+            "bitrate":         320,
+            "size":            7_200_000,
+            "suffix":          "mp3",
+            "content_type":    "audio/mpeg",
+            "year":            2024,
+            "genre":           "Indie",
+            "mtime":           now,
+            "content_hash":    None,
+            "last_scanned":    now,
+        })
+        queries.update_album_aggregates(album_id)
+        queries.update_artist_aggregates(artist_id)
+    return {
+        "folder_id":     folder_id,
+        "artist_id":     artist_id,
+        "album_id":      album_id,
+        "track_id":      track_id,
+        "artist_prefix": f"ar-{artist_id}",
+        "album_prefix":  f"al-{album_id}",
+        "track_prefix":  f"tr-{track_id}",
+    }

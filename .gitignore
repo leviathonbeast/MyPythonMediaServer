@@ -23,6 +23,7 @@ config.yaml
 .vscode/
 .idea/
 *.log
+.claude
 
 # Secrets
 .env

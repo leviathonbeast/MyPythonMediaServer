@@ -23,90 +23,11 @@ WHY worth testing carefully:
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from backend.db import queries, transaction
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _sub(client, endpoint, admin=True, **params):
-    """GET /rest/{endpoint} with Subsonic auth params for one of the two
-    pre-seeded users."""
-    username = "admin" if admin else "regular"
-    password = "adminpass" if admin else "userpass"
-    return client.get(
-        f"/rest/{endpoint}",
-        params={
-            "u": username, "p": password,
-            "v": "1.16.1", "c": "pytest", "f": "json",
-            **params,
-        },
-    )
-
-
-def _ok(r):
-    assert r.status_code == 200, r.text
-    body = r.json()["subsonic-response"]
-    assert body["status"] == "ok", body
-    return body
-
-
-@pytest.fixture()
-def seeded(client):
-    """
-    Seed a minimal library: 1 music folder → 1 artist → 1 album → 1 track.
-
-    Returns a dict of internal integer ids the tests can star against.
-    The IDs are wrapped in their Subsonic-prefixed form (`ar-`, `al-`,
-    `tr-`) when star/unstar are called — that's what real clients send.
-    """
-    with transaction():
-        folder_id = queries.add_music_folder(
-            name="test", path="/test/fixtures/music"
-        )
-        artist_id = queries.upsert_artist("Test Artist", sort_name="Test Artist")
-        album_id = queries.upsert_album(
-            artist_id=artist_id,
-            name="Test Album",
-            year=2024,
-            genre="Indie",
-            release_type="album",
-        )
-        track_id = queries.upsert_track({
-            "album_id":        album_id,
-            "artist_id":       artist_id,
-            "music_folder_id": folder_id,
-            "path":            "/test/fixtures/music/song.mp3",
-            "title":           "Test Song",
-            "track_number":    1,
-            "disc_number":     1,
-            "duration":        180,
-            "bitrate":         320,
-            "size":            7_200_000,
-            "suffix":          "mp3",
-            "content_type":    "audio/mpeg",
-            "year":            2024,
-            "genre":           "Indie",
-            "mtime":           int(time.time()),
-            "content_hash":    None,
-            "last_scanned":    int(time.time()),
-        })
-        # Need the album's true id back from queries (it's the same one
-        # upsert returned, but be explicit).
-    return {
-        "artist_id":     artist_id,
-        "album_id":      album_id,
-        "track_id":      track_id,
-        "artist_prefix": f"ar-{artist_id}",
-        "album_prefix":  f"al-{album_id}",
-        "track_prefix":  f"tr-{track_id}",
-    }
+from ._subsonic import sub as _sub, ok as _ok
 
 
 # ===========================================================================
@@ -148,28 +69,28 @@ class TestEmptyState:
 
 
 class TestStarTrack:
-    def test_starred_track_appears_in_song_list(self, client, seeded):
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+    def test_starred_track_appears_in_song_list(self, client, seeded_library):
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         songs = body["starred"]["song"]
         assert len(songs) == 1
         s = songs[0]
-        assert s["id"] == seeded["track_prefix"]
+        assert s["id"] == seeded_library["track_prefix"]
         assert s["title"] == "Test Song"
 
-    def test_starred_track_has_hydrated_album_and_artist(self, client, seeded):
+    def test_starred_track_has_hydrated_album_and_artist(self, client, seeded_library):
         """Validates the wide-projection JOIN actually populates the response.
         If the joined columns weren't being read, these fields would be empty."""
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         s = body["starred"]["song"][0]
         assert s["album"] == "Test Album"
         assert s["artist"] == "Test Artist"
-        assert s["albumId"] == seeded["album_prefix"]
-        assert s["artistId"] == seeded["artist_prefix"]
+        assert s["albumId"] == seeded_library["album_prefix"]
+        assert s["artistId"] == seeded_library["artist_prefix"]
 
-    def test_starred_track_has_iso_starred_timestamp(self, client, seeded):
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+    def test_starred_track_has_iso_starred_timestamp(self, client, seeded_library):
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         s = body["starred"]["song"][0]
         # ISO 8601 with timezone offset (e.g. "2026-05-14T20:31:00+00:00").
@@ -177,10 +98,10 @@ class TestStarTrack:
         # Tolerate either +00:00 or Z but require some TZ indicator.
         assert "+" in s["starred"] or s["starred"].endswith("Z")
 
-    def test_starred_track_has_audio_metadata(self, client, seeded):
+    def test_starred_track_has_audio_metadata(self, client, seeded_library):
         """A track-shaped row needs duration / bitrate / suffix populated so
         the client can render a player chip without an extra getSong call."""
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         s = body["starred"]["song"][0]
         assert s["duration"] == 180
@@ -189,34 +110,34 @@ class TestStarTrack:
 
 
 class TestStarAlbum:
-    def test_starred_album_appears_in_album_list(self, client, seeded):
-        _ok(_sub(client, "star", albumId=seeded["album_prefix"]))
+    def test_starred_album_appears_in_album_list(self, client, seeded_library):
+        _ok(_sub(client, "star", albumId=seeded_library["album_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         albums = body["starred"]["album"]
         assert len(albums) == 1
         a = albums[0]
-        assert a["id"] == seeded["album_prefix"]
+        assert a["id"] == seeded_library["album_prefix"]
         assert a["name"] == "Test Album"
 
-    def test_starred_album_has_hydrated_artist(self, client, seeded):
+    def test_starred_album_has_hydrated_artist(self, client, seeded_library):
         """Catches the original null-deref bug — if the album_artist_name
         JOIN drops out, this assertion fails with a missing/None value."""
-        _ok(_sub(client, "star", albumId=seeded["album_prefix"]))
+        _ok(_sub(client, "star", albumId=seeded_library["album_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         a = body["starred"]["album"][0]
         assert a["artist"] == "Test Artist"
-        assert a["artistId"] == seeded["artist_prefix"]
+        assert a["artistId"] == seeded_library["artist_prefix"]
         assert a["year"] == 2024
         assert a["genre"] == "Indie"
 
 
 class TestStarArtist:
-    def test_starred_artist_appears_in_artist_list(self, client, seeded):
-        _ok(_sub(client, "star", artistId=seeded["artist_prefix"]))
+    def test_starred_artist_appears_in_artist_list(self, client, seeded_library):
+        _ok(_sub(client, "star", artistId=seeded_library["artist_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         artists = body["starred"]["artist"]
         assert len(artists) == 1
-        assert artists[0]["id"] == seeded["artist_prefix"]
+        assert artists[0]["id"] == seeded_library["artist_prefix"]
         assert artists[0]["name"] == "Test Artist"
 
 
@@ -226,18 +147,18 @@ class TestStarArtist:
 
 
 class TestStarMultiple:
-    def test_star_all_three_types_in_one_call(self, client, seeded):
+    def test_star_all_three_types_in_one_call(self, client, seeded_library):
         _ok(_sub(client, "star",
-                 id=seeded["track_prefix"],
-                 albumId=seeded["album_prefix"],
-                 artistId=seeded["artist_prefix"]))
+                 id=seeded_library["track_prefix"],
+                 albumId=seeded_library["album_prefix"],
+                 artistId=seeded_library["artist_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         assert len(body["starred"]["song"]) == 1
         assert len(body["starred"]["album"]) == 1
         assert len(body["starred"]["artist"]) == 1
 
-    def test_getStarred2_returns_same_payload_under_different_key(self, client, seeded):
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+    def test_getStarred2_returns_same_payload_under_different_key(self, client, seeded_library):
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body1 = _ok(_sub(client, "getStarred"))
         body2 = _ok(_sub(client, "getStarred2"))
         # Apart from the envelope key, the payload shape is identical.
@@ -250,20 +171,20 @@ class TestStarMultiple:
 
 
 class TestUnstar:
-    def test_unstar_track_removes_it_from_song_list(self, client, seeded):
-        _ok(_sub(client, "star",   id=seeded["track_prefix"]))
-        _ok(_sub(client, "unstar", id=seeded["track_prefix"]))
+    def test_unstar_track_removes_it_from_song_list(self, client, seeded_library):
+        _ok(_sub(client, "star",   id=seeded_library["track_prefix"]))
+        _ok(_sub(client, "unstar", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         assert body["starred"]["song"] == []
 
-    def test_unstar_unknown_id_is_noop(self, client, seeded):
+    def test_unstar_unknown_id_is_noop(self, client, seeded_library):
         """Unstarring something that was never starred should silently succeed."""
-        _ok(_sub(client, "unstar", id=seeded["track_prefix"]))
+        _ok(_sub(client, "unstar", id=seeded_library["track_prefix"]))
 
-    def test_double_star_is_idempotent(self, client, seeded):
+    def test_double_star_is_idempotent(self, client, seeded_library):
         """star_item uses INSERT OR IGNORE, so the same row is only counted once."""
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
-        _ok(_sub(client, "star", id=seeded["track_prefix"]))
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
+        _ok(_sub(client, "star", id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred"))
         assert len(body["starred"]["song"]) == 1
 
@@ -274,13 +195,13 @@ class TestUnstar:
 
 
 class TestPerUserScope:
-    def test_admin_star_not_visible_to_regular(self, client, seeded):
-        _ok(_sub(client, "star", admin=True, id=seeded["track_prefix"]))
+    def test_admin_star_not_visible_to_regular(self, client, seeded_library):
+        _ok(_sub(client, "star", admin=True, id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred", admin=False))
         assert body["starred"]["song"] == []
 
-    def test_regular_star_not_visible_to_admin(self, client, seeded):
-        _ok(_sub(client, "star", admin=False, id=seeded["track_prefix"]))
+    def test_regular_star_not_visible_to_admin(self, client, seeded_library):
+        _ok(_sub(client, "star", admin=False, id=seeded_library["track_prefix"]))
         body = _ok(_sub(client, "getStarred", admin=True))
         assert body["starred"]["song"] == []
 

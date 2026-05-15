@@ -1,0 +1,405 @@
+"""
+Direct unit tests for backend/db/queries.py.
+
+Exercises the SQL layer without going through FastAPI so regressions in
+the rewritten hot-path queries get caught here first.
+
+Covers the rewrites that motivated this file:
+  - list_albums frequent/recent CTE-based play aggregation
+  - list_artists_indexed windowed cover-art pick
+  - list_song_by_genre ORDER BY id + music_folder_id filter
+  - library_stats single round-trip aggregation
+  - upsert_artist/album/track RETURNING idempotency
+  - cleanup_empty_albums_and_artists NOT EXISTS pruning
+  - update_album_aggregates / update_artist_aggregates
+  - normalize_sort_name behavior
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from backend.db import queries, transaction
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _track_row(
+    *,
+    path: str,
+    title: str = "Song",
+    album_id: int | None = None,
+    artist_id: int | None = None,
+    music_folder_id: int | None = None,
+    duration: int = 180,
+    genre: str | None = "Rock",
+    year: int = 2024,
+) -> dict:
+    """Build a fully-populated track dict for upsert_track.
+
+    Defaults keep tests terse; override only the fields a test cares about.
+    """
+    now = int(time.time())
+    return {
+        "album_id":        album_id,
+        "artist_id":       artist_id,
+        "music_folder_id": music_folder_id,
+        "path":            path,
+        "title":           title,
+        "track_number":    1,
+        "disc_number":     1,
+        "duration":        duration,
+        "bitrate":         320,
+        "size":            7_200_000,
+        "suffix":          "mp3",
+        "content_type":    "audio/mpeg",
+        "year":            year,
+        "genre":           genre,
+        "mtime":           now,
+        "content_hash":    None,
+        "last_scanned":    now,
+    }
+
+
+# ===========================================================================
+# normalize_sort_name
+# ===========================================================================
+
+
+class TestNormalizeSortName:
+    def test_strips_leading_the(self):
+        assert queries.normalize_sort_name("The Wall") == "Wall"
+
+    def test_strips_leading_a(self):
+        assert queries.normalize_sort_name("A Day in the Life") == "Day in the Life"
+
+    def test_strips_leading_an(self):
+        assert queries.normalize_sort_name("An Evening Out") == "Evening Out"
+
+    def test_article_case_insensitive(self):
+        assert queries.normalize_sort_name("THE WALL") == "WALL"
+
+    def test_symbols_prefixed_with_tilde_to_sort_last(self):
+        # The whole point: '$' should sort after 'Z', not before 'A'.
+        assert queries.normalize_sort_name("$ome $exy $ongs").startswith("~")
+
+    def test_alphanumeric_left_alone(self):
+        assert queries.normalize_sort_name("Wall") == "Wall"
+
+
+# ===========================================================================
+# Upsert RETURNING idempotency
+# ===========================================================================
+
+
+class TestUpsertArtist:
+    def test_same_name_returns_same_id(self, client):
+        with transaction():
+            a = queries.upsert_artist("Daft Punk")
+            b = queries.upsert_artist("Daft Punk")
+        assert a == b
+
+    def test_case_insensitive_dedup(self, client):
+        """The name_lower constraint must merge 'AC/DC' with 'ac/dc'."""
+        with transaction():
+            a = queries.upsert_artist("AC/DC")
+            b = queries.upsert_artist("ac/dc")
+        assert a == b
+
+
+class TestUpsertAlbum:
+    def test_same_artist_and_name_returns_same_id(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Artist X")
+            a = queries.upsert_album(artist_id=artist, name="Album X", year=2020)
+            b = queries.upsert_album(artist_id=artist, name="Album X", year=2020)
+        assert a == b
+
+    def test_null_year_filled_in_on_second_upsert(self, client):
+        """COALESCE in DO UPDATE preserves the first non-NULL value."""
+        with transaction():
+            artist = queries.upsert_artist("Artist Y")
+            first = queries.upsert_album(artist_id=artist, name="Album Y", year=None)
+            second = queries.upsert_album(artist_id=artist, name="Album Y", year=2020)
+        assert first == second
+        assert queries.get_album(first)["year"] == 2020
+
+    def test_existing_year_not_clobbered_by_null(self, client):
+        """A later upsert with year=None must not erase the previously-set year."""
+        with transaction():
+            artist = queries.upsert_artist("Artist Z")
+            first = queries.upsert_album(artist_id=artist, name="Album Z", year=2020)
+            second = queries.upsert_album(artist_id=artist, name="Album Z", year=None)
+        assert first == second
+        assert queries.get_album(first)["year"] == 2020
+
+
+class TestUpsertTrack:
+    def test_returning_matches_lookup_id(self, client, seeded_library):
+        """RETURNING id must match a follow-up SELECT WHERE path = ?."""
+        row = queries.get_conn().execute(
+            "SELECT id FROM tracks WHERE path = ?",
+            ("/test/fixtures/music/song.mp3",),
+        ).fetchone()
+        assert row["id"] == seeded_library["track_id"]
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "fts5_track_update trigger DELETEs from contentless virt_fts5, "
+            "which SQLite forbids. Affects every re-scan of an existing track. "
+            "Fix in migrations.py: switch the trigger to "
+            "INSERT INTO virt_fts5(virt_fts5, rowid, ...) VALUES('delete', ...)."
+        ),
+    )
+    def test_same_path_updates_in_place(self, client, seeded_library):
+        with transaction():
+            new_id = queries.upsert_track(_track_row(
+                path="/test/fixtures/music/song.mp3",
+                title="Updated Title",
+                artist_id=seeded_library["artist_id"],
+                album_id=seeded_library["album_id"],
+                music_folder_id=seeded_library["folder_id"],
+            ))
+        assert new_id == seeded_library["track_id"]
+        assert queries.get_track(new_id)["title"] == "Updated Title"
+
+
+# ===========================================================================
+# list_albums frequent / recent CTE
+# ===========================================================================
+
+
+class TestListAlbumsFrequentRecent:
+    """The CTE must order albums by total plays (frequent) or last-played (recent)."""
+
+    @pytest.fixture()
+    def seeded(self, client):
+        """Two albums; one gets 5 play_count rows, the other none."""
+        with transaction():
+            folder = queries.add_music_folder(name="f", path="/freq-folder")
+            artist = queries.upsert_artist("Frequent Artist")
+            popular = queries.upsert_album(artist_id=artist, name="Popular", year=2024)
+            unpopular = queries.upsert_album(artist_id=artist, name="Unpopular", year=2024)
+            pt = queries.upsert_track(_track_row(
+                path="/freq-folder/p.mp3", title="Pop",
+                artist_id=artist, album_id=popular, music_folder_id=folder,
+            ))
+            queries.upsert_track(_track_row(
+                path="/freq-folder/u.mp3", title="Unpop",
+                artist_id=artist, album_id=unpopular, music_folder_id=folder,
+            ))
+            queries.update_album_aggregates(popular)
+            queries.update_album_aggregates(unpopular)
+            queries.update_artist_aggregates(artist)
+            admin = queries.get_user_by_username("admin")
+            for _ in range(5):
+                queries.play_count(admin["id"], pt)
+        return {"popular": popular, "unpopular": unpopular}
+
+    def test_frequent_puts_most_played_first(self, client, seeded):
+        order = [a["id"] for a in queries.list_albums(list_type="frequent", size=10)]
+        assert order.index(seeded["popular"]) < order.index(seeded["unpopular"])
+
+    def test_recent_puts_most_recently_played_first(self, client, seeded):
+        order = [a["id"] for a in queries.list_albums(list_type="recent", size=10)]
+        assert order.index(seeded["popular"]) < order.index(seeded["unpopular"])
+
+    def test_unplayed_albums_still_returned(self, client, seeded):
+        """LEFT JOIN against the CTE keeps zero-play albums in the result."""
+        ids = {a["id"] for a in queries.list_albums(list_type="frequent", size=100)}
+        assert seeded["unpopular"] in ids
+
+
+# ===========================================================================
+# list_artists_indexed (windowed cover-art pick)
+# ===========================================================================
+
+
+class TestListArtistsIndexed:
+    def test_cover_art_id_picks_newest_album(self, client):
+        """ROW_NUMBER() OVER (... ORDER BY year DESC) must select the newest cover."""
+        with transaction():
+            artist = queries.upsert_artist("Window Artist")
+            old = queries.upsert_album(artist_id=artist, name="Old Album", year=2000)
+            new = queries.upsert_album(artist_id=artist, name="New Album", year=2024)
+            queries.set_album_cover_art(old, "cover-old-hash")
+            queries.set_album_cover_art(new, "cover-new-hash")
+            queries.update_artist_aggregates(artist)
+
+        found = None
+        for artists in queries.list_artists_indexed().values():
+            for a in artists:
+                if a["id"] == artist:
+                    found = a
+                    break
+        assert found is not None, "artist should appear in indexed result"
+        assert found["coverArtId"] == "cover-new-hash"
+
+    def test_artists_without_albums_are_excluded(self, client):
+        """The WHERE album_count > 0 filter must drop empty artists."""
+        with transaction():
+            queries.upsert_artist("No Albums Artist")
+            # No upsert_album / no update_artist_aggregates → album_count stays 0.
+        flat = [a for arts in queries.list_artists_indexed().values() for a in arts]
+        assert all(a["name"] != "No Albums Artist" for a in flat)
+
+    def test_symbol_artist_lands_in_hash_bucket(self, client):
+        """sort_name starting with '~' (symbol-prefixed) goes to '#'."""
+        with transaction():
+            artist = queries.upsert_artist("$ymbolic", sort_name="~$ymbolic")
+            album = queries.upsert_album(artist_id=artist, name="Album", year=2024)
+            queries.update_artist_aggregates(artist)
+        indexed = queries.list_artists_indexed()
+        assert any(a["id"] == artist for a in indexed.get("#", []))
+
+
+# ===========================================================================
+# list_song_by_genre
+# ===========================================================================
+
+
+class TestListSongByGenre:
+    def test_filters_by_genre(self, client):
+        with transaction():
+            folder = queries.add_music_folder(name="g", path="/genre-folder")
+            artist = queries.upsert_artist("Genre Artist")
+            album = queries.upsert_album(artist_id=artist, name="Mix", year=2024)
+            rock = queries.upsert_track(_track_row(
+                path="/genre-folder/rock.mp3",
+                artist_id=artist, album_id=album, music_folder_id=folder, genre="Rock",
+            ))
+            jazz = queries.upsert_track(_track_row(
+                path="/genre-folder/jazz.mp3",
+                artist_id=artist, album_id=album, music_folder_id=folder, genre="Jazz",
+            ))
+
+        assert {t["id"] for t in queries.list_song_by_genre("Rock", 10, 0)} == {rock}
+        assert {t["id"] for t in queries.list_song_by_genre("Jazz", 10, 0)} == {jazz}
+
+    def test_pagination_pages_do_not_overlap(self, client):
+        """ORDER BY t.id was added so OFFSET pagination is stable."""
+        with transaction():
+            folder = queries.add_music_folder(name="p", path="/page-folder")
+            artist = queries.upsert_artist("Page Artist")
+            album = queries.upsert_album(artist_id=artist, name="Pages", year=2024)
+            for i in range(5):
+                queries.upsert_track(_track_row(
+                    path=f"/page-folder/{i}.mp3", title=f"t{i}",
+                    artist_id=artist, album_id=album, music_folder_id=folder,
+                    genre="Pagey",
+                ))
+
+        page1 = {t["id"] for t in queries.list_song_by_genre("Pagey", 2, 0)}
+        page2 = {t["id"] for t in queries.list_song_by_genre("Pagey", 2, 2)}
+        assert page1.isdisjoint(page2)
+
+    def test_music_folder_id_filter(self, client):
+        """The newly-honored music_folder_id param scopes results to one folder."""
+        with transaction():
+            f1 = queries.add_music_folder(name="f1", path="/folder-one")
+            f2 = queries.add_music_folder(name="f2", path="/folder-two")
+            artist = queries.upsert_artist("Multi Folder")
+            album = queries.upsert_album(artist_id=artist, name="Spread", year=2024)
+            t1 = queries.upsert_track(_track_row(
+                path="/folder-one/song.mp3",
+                artist_id=artist, album_id=album, music_folder_id=f1, genre="Mixed",
+            ))
+            queries.upsert_track(_track_row(
+                path="/folder-two/song.mp3",
+                artist_id=artist, album_id=album, music_folder_id=f2, genre="Mixed",
+            ))
+
+        results = queries.list_song_by_genre("Mixed", 10, 0, music_folder_id=f1)
+        assert {t["id"] for t in results} == {t1}
+
+
+# ===========================================================================
+# library_stats
+# ===========================================================================
+
+
+class TestLibraryStats:
+    def test_empty_library(self, client):
+        assert queries.library_stats() == {
+            "artists": 0,
+            "albums": 0,
+            "tracks": 0,
+            "total_duration_seconds": 0,
+        }
+
+    def test_counts_match_seeded_library(self, client, seeded_library):
+        s = queries.library_stats()
+        assert s["artists"] == 1
+        assert s["albums"] == 1
+        assert s["tracks"] == 1
+        assert s["total_duration_seconds"] == 180
+
+
+# ===========================================================================
+# cleanup_empty_albums_and_artists
+# ===========================================================================
+
+
+class TestCleanupEmpty:
+    def test_album_with_no_tracks_is_pruned(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Cleanup Artist")
+            album = queries.upsert_album(artist_id=artist, name="Empty", year=2024)
+        assert queries.get_album(album) is not None
+
+        with transaction():
+            albums_deleted, _ = queries.cleanup_empty_albums_and_artists()
+        assert albums_deleted >= 1
+        assert queries.get_album(album) is None
+
+    def test_artist_with_no_albums_is_pruned(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Lonely Artist")
+        with transaction():
+            _, artists_deleted = queries.cleanup_empty_albums_and_artists()
+        assert artists_deleted >= 1
+        assert queries.get_artist(artist) is None
+
+    def test_artist_and_album_with_tracks_survive(self, client, seeded_library):
+        with transaction():
+            queries.cleanup_empty_albums_and_artists()
+        assert queries.get_artist(seeded_library["artist_id"]) is not None
+        assert queries.get_album(seeded_library["album_id"]) is not None
+
+
+# ===========================================================================
+# Aggregate denormalization
+# ===========================================================================
+
+
+class TestUpdateAggregates:
+    def test_update_album_aggregates_counts_tracks_and_sums_duration(self, client):
+        with transaction():
+            folder = queries.add_music_folder(name="agg", path="/agg-folder")
+            artist = queries.upsert_artist("Agg Artist")
+            album = queries.upsert_album(artist_id=artist, name="Agg", year=2024)
+            for i in range(3):
+                queries.upsert_track(_track_row(
+                    path=f"/agg-folder/{i}.mp3", title=f"t{i}",
+                    artist_id=artist, album_id=album, music_folder_id=folder,
+                    duration=60,
+                ))
+            queries.update_album_aggregates(album)
+
+        row = queries.get_album(album)
+        assert row["track_count"] == 3
+        assert row["duration"] == 180
+
+    def test_update_artist_aggregates_counts_albums(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Multi Album")
+            queries.upsert_album(artist_id=artist, name="A", year=2024)
+            queries.upsert_album(artist_id=artist, name="B", year=2024)
+            queries.update_artist_aggregates(artist)
+        assert queries.get_artist(artist)["album_count"] == 2

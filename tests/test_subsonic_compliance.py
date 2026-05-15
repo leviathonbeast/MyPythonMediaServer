@@ -18,66 +18,12 @@ The DB is empty for these tests (no seeded music), so we exercise:
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from backend.db import queries
 from backend.db.connection import transaction
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _sub(client, endpoint, admin=True, method="GET", **params):
-    """Make a request to /rest/{endpoint} with Subsonic auth params."""
-    username = "admin" if admin else "regular"
-    password = "adminpass" if admin else "userpass"
-    query = {
-        "u": username,
-        "p": password,
-        "v": "1.16.1",
-        "c": "pytest",
-        "f": "json",
-        **params,
-    }
-    if method == "GET":
-        return client.get(f"/rest/{endpoint}", params=query)
-    return client.post(f"/rest/{endpoint}", params=query)
-
-
-def _envelope(r):
-    """Pull the subsonic-response envelope out and assert the universal shape."""
-    assert r.status_code == 200, f"HTTP {r.status_code}: {r.text}"
-    body = r.json().get("subsonic-response")
-    assert body is not None, f"Response missing 'subsonic-response' key: {r.text}"
-    # Universal OpenSubsonic envelope fields.
-    for k in ("status", "version", "type", "serverVersion", "openSubsonic"):
-        assert k in body, f"Envelope missing {k!r}: {body}"
-    assert body["openSubsonic"] is True
-    return body
-
-
-def _ok(r):
-    body = _envelope(r)
-    assert body["status"] == "ok", f"Expected ok, got: {body}"
-    return body
-
-
-def _err(r, code=None):
-    body = _envelope(r)
-    assert body["status"] == "failed", f"Expected failed, got: {body}"
-    err = body.get("error") or {}
-    assert "code" in err and isinstance(
-        err["code"], int
-    ), f"Error missing int code: {err}"
-    assert "message" in err and err["message"], f"Error missing message: {err}"
-    if code is not None:
-        assert (
-            err["code"] == code
-        ), f"Expected error code {code}, got {err['code']}: {err}"
-    return body
+from ._subsonic import sub as _sub, ok as _ok, err as _err
 
 
 # ===========================================================================
@@ -333,14 +279,6 @@ class TestStarred:
             "getStarred2 should wrap its payload under the 'starred2' key, "
             f"not 'starred'. Got envelope keys: {list(body.keys())}"
         )
-
-
-class TestStarUnstar:
-    def test_star_returns_ok(self, client):
-        _ok(_sub(client, "star"))
-
-    def test_unstar_returns_ok(self, client):
-        _ok(_sub(client, "unstar"))
 
 
 class TestNowPlaying:
