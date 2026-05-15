@@ -227,6 +227,38 @@ def _migration_008_artist_image(conn: sqlite3.Connection) -> None:
         pass  # idempotent — column may already exist on a partial run
 
 
+def _migration_010_play_queue(conn: sqlite3.Connection) -> None:
+    """
+    Per-user play queue for Subsonic savePlayQueue / getPlayQueue.
+
+    One row per user in play_queues (overwritten on every save), plus a
+    child table holding the ordered list of track ids. Splitting the list
+    into its own table keeps ordering and joins natural — stuffing ids into
+    a CSV column would force string parsing for every read.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS play_queues (
+            user_id      INTEGER PRIMARY KEY,
+            current_id   INTEGER,
+            position_ms  INTEGER NOT NULL DEFAULT 0,
+            changed_at   INTEGER NOT NULL,
+            changed_by   TEXT NOT NULL,
+            FOREIGN KEY (user_id)    REFERENCES users(id)  ON DELETE CASCADE,
+            FOREIGN KEY (current_id) REFERENCES tracks(id) ON DELETE SET NULL
+        )
+        """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS play_queue_entries (
+            user_id  INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            track_id INTEGER NOT NULL,
+            PRIMARY KEY (user_id, position),
+            FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+        )
+        """)
+
+
 def _migration_009_encrypted_password(conn: sqlite3.Connection) -> None:
     """Add `encrypted_password` to users for Subsonic token+salt verification.
 
@@ -255,6 +287,7 @@ MIGRATIONS: List[Migration] = [
     (7, _migration_007_fts5),
     (8, _migration_008_artist_image),
     (9, _migration_009_encrypted_password),
+    (10, _migration_010_play_queue),
 ]
 
 

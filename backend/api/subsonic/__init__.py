@@ -8,6 +8,7 @@ from . import (
     streaming,
     annotation,
     playlists,
+    play_queue,
     albums,
     browsing,
     artist_info,

@@ -430,6 +430,38 @@ def remove_tracks_from_playlist(playlist_id: int, positions: list[int]) -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Play queue (Subsonic savePlayQueue / getPlayQueue)
+# ---------------------------------------------------------------------------
+
+
+def save_play_queue(
+    user_id: int,
+    track_ids: list[int],
+    current_track_id: int | None,
+    position_ms: int,
+    client: str,
+) -> None:
+    """Replace this user's saved queue with a new one."""
+    conn = get_conn()
+    # Wipe the old ordered list. The header row in play_queues is overwritten
+    # below via INSERT OR REPLACE, so we don't need to delete it explicitly.
+    conn.execute("DELETE FROM play_queue_entries WHERE user_id = ?", (user_id,))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO play_queues
+            (user_id, current_id, position_ms, changed_at, changed_by)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (user_id, current_track_id, position_ms, int(time.time()), client),
+    )
+    if track_ids:
+        conn.executemany(
+            "INSERT INTO play_queue_entries (user_id, position, track_id) VALUES (?, ?, ?)",
+            [(user_id, pos, tid) for pos, tid in enumerate(track_ids)],
+        )
+
+
+# ---------------------------------------------------------------------------
 # Artists
 # ---------------------------------------------------------------------------
 

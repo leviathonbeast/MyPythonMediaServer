@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from urllib.parse import quote
 
 from fastapi import Depends, Query, Response, Request
 
@@ -17,7 +18,9 @@ from .helpers import (
 )
 
 
-def _resolve_track(id: str, ctx: SubsonicContext) -> Tuple[Optional[dict], Optional[Response]]:
+def _resolve_track(
+    id: str, ctx: SubsonicContext
+) -> Tuple[Optional[dict], Optional[Response]]:
     """
     Shared id-lookup for stream and download.
 
@@ -90,7 +93,7 @@ def download(
     track, err = _resolve_track(id, ctx)
     if err is not None:
         return err
-    return stream_track(
+    t = stream_track(
         request=request,
         track_path=track["path"],
         track_suffix=track["suffix"],
@@ -99,3 +102,7 @@ def download(
         requested_format=None,  # never transcode on download
         requested_bitrate=None,
     )
+
+    filename = f"{track['title']}.{track['suffix']}"
+    t.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return t
