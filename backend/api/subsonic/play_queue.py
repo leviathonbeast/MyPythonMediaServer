@@ -66,13 +66,20 @@ def save_play_queue(
         if kind == "track" and internal is not None:
             current_id = internal
 
+    # Some clients (e.g. Airdrome) misuse the Subsonic `c=` param and send
+    # the server URL instead of their own name. Fall back to "unknown" so
+    # changedBy stays meaningful in the response.
+    client = ctx.client
+    if client.startswith(("http://", "https://")):
+        client = "unknown"
+
     with transaction():
         queries.save_play_queue(
             user_id=ctx.user_id,
             track_ids=track_ids,
             current_track_id=current_id,
             position_ms=position or 0,
-            client=ctx.client,
+            client=client,
         )
 
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
