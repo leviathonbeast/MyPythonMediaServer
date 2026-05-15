@@ -429,6 +429,17 @@ export async function getAlbumList(
   return env.albumList?.album ?? [];
 }
 
+export async function getSongsByGenre(
+  genre: string,
+  count = 50,
+  offset = 0,
+): Promise<SubsonicSong[]> {
+  const env = await subsonic<{ songsByGenre: { song?: SubsonicSong[] } }>("getSongsByGenre", {
+    genre, count, offset,
+  });
+  return env.songsByGenre?.song ?? [];
+}
+
 /** cleaner getAlbum */
 type GetAlbumResponse = { album: SubsonicAlbum & { song?: SubsonicSong[] } };
 
@@ -567,6 +578,49 @@ export async function updatePlaylist(
 export async function deletePlaylist(playlistId: string | number): Promise<void> {
   // Server uses snake_case `playlist_id` query name (not the spec's `id`).
   await subsonic<unknown>("deletePlaylist", { playlist_id: String(playlistId) });
+}
+
+/* ---------- Play queue (Subsonic savePlayQueue / getPlayQueue) ---------- */
+
+export interface SubsonicPlayQueue {
+  current?: string;     // current track id (e.g. "tr-123")
+  position?: number;    // playback position in milliseconds
+  username?: string;
+  changed?: string;     // ISO timestamp
+  changedBy?: string;   // client name
+  entry?: SubsonicSong[];
+}
+
+export async function getPlayQueue(): Promise<SubsonicPlayQueue | null> {
+  const env = await subsonic<{ playQueue?: SubsonicPlayQueue }>("getPlayQueue");
+  return env.playQueue ?? null;
+}
+
+/**
+ * Save the user's play queue. Track ids are sent as repeated `id=` params, so
+ * like createPlaylist we build the URL by hand rather than going through subsonic().
+ */
+export async function savePlayQueue(
+  trackIds: string[],
+  current: string | null,
+  positionMs: number,
+): Promise<void> {
+  const params = subsonicAuthParams();
+  for (const tid of trackIds) params.append("id", tid);
+  if (current) params.set("current", current);
+  params.set("position", String(Math.max(0, Math.floor(positionMs))));
+  const res = await fetch(`/rest/savePlayQueue.view?${params.toString()}`, {
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    if (res.status === 401) signOut();
+    throw new Error(`HTTP ${res.status} on savePlayQueue`);
+  }
+  const body = await res.json();
+  const env = body["subsonic-response"];
+  if (env?.status === "failed") {
+    throw new Error(env.error?.message ?? "savePlayQueue failed");
+  }
 }
 
 /* ---------- Library admin (web-side) ---------- */

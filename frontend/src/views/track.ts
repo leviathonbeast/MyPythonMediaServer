@@ -134,7 +134,7 @@ function heroHtml(song: SubsonicSong): string {
                   ? `<a href="#/album/${encodeURIComponent(song.albumId)}">${escapeHtml(song.album ?? "—")}</a>`
                   : escapeHtml(song.album ?? "—"))}
             ${song.track ? metaRow("Track", String(song.track)) : ""}
-            ${song.genre ? metaRow("Genre", escapeHtml(song.genre)) : ""}
+            ${song.genre ? metaRow("Genre", `<a href="#/genre/${encodeURIComponent(song.genre)}">${escapeHtml(song.genre)}</a>`) : ""}
             ${song.year ? metaRow("Released", String(song.year)) : ""}
             ${song.suffix ? metaRow("Format", `${escapeHtml(song.suffix.toUpperCase())}${song.bitRate ? ` · ${song.bitRate} kbps` : ""}`) : ""}
             ${song.playCount !== undefined ? metaRow("Play Count", String(song.playCount)): ""}

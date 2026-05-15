@@ -400,6 +400,96 @@ a:hover { color: var(--accent); }
 .player .vol .label { color: var(--muted); }
 .player .vol input { width: 100px; }
 
+/* Queue panel — slides up from the player dock */
+.player .queue-panel {
+  position: absolute;
+  right: var(--gap-4);
+  bottom: var(--player-h);
+  width: 380px;
+  max-height: 60vh;
+  background: var(--bg-2);
+  border: 1px solid var(--rule);
+  border-bottom: none;
+  display: flex;
+  flex-direction: column;
+  z-index: 11;
+}
+.player .queue-panel[hidden] { display: none; }
+.player .queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--gap-2) var(--gap-3);
+  border-bottom: 1px solid var(--rule);
+}
+.player .queue-title {
+  font-family: var(--font-mono);
+  font-size: var(--t-small);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.player .queue-header button {
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  color: var(--muted);
+  padding: 0 var(--gap-1);
+}
+.player .queue-header button:hover { color: var(--accent); }
+.player .queue-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.player .queue-empty {
+  padding: var(--gap-4);
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.player .queue-row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: var(--gap-2);
+  align-items: center;
+  padding: var(--gap-2) var(--gap-3);
+  cursor: pointer;
+  border-bottom: 1px solid var(--rule);
+}
+.player .queue-row:hover { background: var(--bg); }
+.player .queue-row.is-current .queue-row-title { color: var(--accent); }
+.player .queue-art {
+  width: 40px; height: 40px;
+  background: var(--bg);
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--rule);
+}
+.player .queue-meta { min-width: 0; }
+.player .queue-row-title {
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player .queue-row-sub {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player .queue-row-dur {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--muted);
+}
+
 /* ─── 5. Components ──────────────────────────────────────────── */
 
 /* Generic content panel */

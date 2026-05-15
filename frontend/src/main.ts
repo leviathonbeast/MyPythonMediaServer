@@ -27,6 +27,7 @@ import { renderProfile } from "./views/profile";
 import { renderAdmin } from "./views/admin";
 import { renderPlaylists } from "./views/playlists";
 import { renderPlaylist } from "./views/playlist";
+import { renderGenre } from "./views/genre";
 
 const root = document.getElementById("app")!;
 
@@ -103,6 +104,7 @@ const routes: Route[] = [
   { match: /^\/artist\/(.+)$/,   handle: (h, p) => renderArtist(h, decodeURIComponent(p[0])) },
   { match: /^\/playlist\/(.+)$/, handle: (h, p) => renderPlaylist(h, decodeURIComponent(p[0])) },
   { match: /^\/playlists$/,      handle: (h)    => renderPlaylists(h) },
+  { match: /^\/genre\/(.+)$/,    handle: (h, p) => renderGenre(h, decodeURIComponent(p[0])) },
   { match: /^\/library$/,        handle: (h)    => renderLibrary(h) },
   { match: /^\/search(?:\/(.+))?$/, handle: (h, p) => renderSearch(h, p[0] ? decodeURIComponent(p[0]) : undefined) },
   { match: /^\/settings$/,       handle: (h)    => renderSettings(h) },

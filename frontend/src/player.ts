@@ -19,6 +19,7 @@ import type { SubsonicSong } from "./api";
 import {
   subsonic, coverArtUrl, streamUrl, getTranscodingPolicy, getTranscodingPrefs,
   resolveStreamPlan, type TranscodingPolicy,
+  getPlayQueue, savePlayQueue,
 } from "./api";
 
 type Listener = (state: PlayerState) => void;
@@ -39,6 +40,11 @@ class Player {
   private index = -1;
   private listeners = new Set<Listener>();
   private scrobbled = false;
+  // Persistence: skip save() while we're restoring from the server so we
+  // don't clobber the saved state with a partial in-memory snapshot.
+  private suppressSave = false;
+  private positionTimer: number | null = null;
+  private pendingRestorePosition = 0;
 
   constructor() {
     // Restore volume from previous session if available.
@@ -48,23 +54,25 @@ class Player {
     // We forward the small set of <audio> events we care about. Each one
     // pokes subscribers with the latest state.
     const fwd = () => this.emit();
-    this.audio.addEventListener("play", fwd);
-    this.audio.addEventListener("pause", fwd);
+    this.audio.addEventListener("play", () => { fwd(); this.startPositionTimer(); });
+    this.audio.addEventListener("pause", () => {
+      fwd();
+      this.stopPositionTimer();
+      void this.save();
+    });
     this.audio.addEventListener("timeupdate", () => {
       fwd();
-//      console.log("timeupdate", this.audio.currentTime, this.audio.duration, this.scrobbled); just debugging move along
       const track = this.queue[this.index];
       const knownDuration = track?.duration ?? 0;
-      //console.log("timeupdate", this.audio.currentTime, knownDuration, this.scrobbled, this.audio.currentTime / knownDuration);
       if (
         !this.scrobbled &&
         knownDuration > 0 &&
         this.audio.currentTime / knownDuration >= 0.5
-        ) {
-          this.scrobbled = true;
-          this.triggerScrobble();
-          }
-});
+      ) {
+        this.scrobbled = true;
+        this.triggerScrobble();
+      }
+    });
     this.audio.addEventListener("durationchange", fwd);
     this.audio.addEventListener("volumechange", () => {
       localStorage.setItem("muse.volume", String(this.audio.volume));
@@ -85,6 +93,21 @@ class Player {
       console.error("Audio error", this.audio.error);
       this.emit();
     });
+    // After the audio element has metadata for the restored track, seek to
+    // the saved position. We can't do this synchronously in restore() because
+    // the metadata isn't loaded yet.
+    this.audio.addEventListener("loadedmetadata", () => {
+      if (this.pendingRestorePosition > 0) {
+        this.audio.currentTime = this.pendingRestorePosition;
+        this.pendingRestorePosition = 0;
+      }
+    });
+    // Persist on tab close so the saved position is current.
+    window.addEventListener("pagehide", () => { void this.save(); });
+
+    // Kick off async restore. Browsers will block autoplay so we just load
+    // the track and seek to the saved position — user clicks play to resume.
+    void this.restore();
   }
 
   /* ---------- queue management ---------- */
@@ -100,6 +123,13 @@ class Player {
   enqueue(songs: SubsonicSong[]): void {
     this.queue.push(...songs);
     this.emit();
+    void this.save();
+  }
+
+  /** Jump to a specific index in the current queue. Used by the queue view. */
+  jumpTo(i: number): void {
+    if (i < 0 || i >= this.queue.length) return;
+    this.playAt(i);
   }
 
   /* ---------- transport ---------- */
@@ -149,6 +179,63 @@ class Player {
       console.warn("Play rejected (autoplay policy?)", err);
     });
     this.emit();
+    void this.save();
+  }
+
+  /* ---------- persistence ---------- */
+
+  private async restore(): Promise<void> {
+    this.suppressSave = true;
+    try {
+      const pq = await getPlayQueue();
+      const entries = pq?.entry ?? [];
+      if (entries.length === 0) return;
+
+      this.queue = entries;
+      // Find the index of the saved "current" track. Fall back to 0 if not found.
+      const currentId = pq?.current;
+      const idx = currentId ? this.queue.findIndex(t => t.id === currentId) : 0;
+      this.index = idx >= 0 ? idx : 0;
+
+      const track = this.queue[this.index];
+      if (track) {
+        this.audio.src = streamUrl(track.id);
+        // Convert ms → seconds. Applied in the 'loadedmetadata' handler since
+        // currentTime can't be set until the audio has loaded enough metadata.
+        this.pendingRestorePosition = Math.max(0, (pq?.position ?? 0) / 1000);
+      }
+      this.emit();
+    } catch (err) {
+      console.warn("Failed to restore play queue:", err);
+    } finally {
+      this.suppressSave = false;
+    }
+  }
+
+  private async save(): Promise<void> {
+    if (this.suppressSave || this.queue.length === 0) return;
+    const track = this.queue[this.index];
+    const ids = this.queue.map(t => t.id);
+    const positionMs = Math.floor((this.audio.currentTime || 0) * 1000);
+    try {
+      await savePlayQueue(ids, track?.id ?? null, positionMs);
+    } catch (err) {
+      console.warn("savePlayQueue failed:", err);
+    }
+  }
+
+  private startPositionTimer(): void {
+    this.stopPositionTimer();
+    // Save position every 10s during playback so a tab crash doesn't lose
+    // more than ~10s of progress.
+    this.positionTimer = window.setInterval(() => { void this.save(); }, 10_000);
+  }
+
+  private stopPositionTimer(): void {
+    if (this.positionTimer != null) {
+      clearInterval(this.positionTimer);
+      this.positionTimer = null;
+    }
   }
 
   private triggerScrobble(): void {
@@ -210,6 +297,13 @@ export function fmtDuration(seconds: number | undefined | null): string {
 export function mountPlayerDock(host: HTMLElement): () => void {
   host.classList.add("player");
   host.innerHTML = `
+    <div class="queue-panel" data-queue-panel hidden>
+      <div class="queue-header">
+        <span class="queue-title">QUEUE</span>
+        <button data-queue-close title="Close">×</button>
+      </div>
+      <div class="queue-list" data-queue-list></div>
+    </div>
     <div class="now">
       <div class="art" data-art></div>
       <div class="meta">
@@ -223,6 +317,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
         <button data-prev title="Previous">◀◀ PREV</button>
         <button class="play" data-play title="Play / pause">PLAY</button>
         <button data-next title="Next">NEXT ▶▶</button>
+        <button data-queue title="Show queue">QUEUE</button>
       </div>
       <div class="scrub">
         <span class="time" data-cur>0:00</span>
@@ -245,6 +340,10 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   const elPlay = $("[data-play]") as HTMLButtonElement;
   const elPrev = $("[data-prev]") as HTMLButtonElement;
   const elNext = $("[data-next]") as HTMLButtonElement;
+  const elQueueBtn = $("[data-queue]") as HTMLButtonElement;
+  const elQueuePanel = $("[data-queue-panel]") as HTMLElement;
+  const elQueueClose = $("[data-queue-close]") as HTMLButtonElement;
+  const elQueueList = $("[data-queue-list]") as HTMLElement;
   const elSeek = $("[data-seek]") as HTMLInputElement;
   const elCur = $("[data-cur]") as HTMLElement;
   const elDur = $("[data-dur]") as HTMLElement;
@@ -292,6 +391,48 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   elPlay.addEventListener("click", () => player.toggle());
   elPrev.addEventListener("click", () => player.prev());
   elNext.addEventListener("click", () => player.next());
+
+  // Queue panel toggle + jump-to-row delegation
+  const renderQueue = (state: PlayerState) => {
+    if (state.queue.length === 0) {
+      elQueueList.innerHTML = `<div class="queue-empty">Nothing queued</div>`;
+      return;
+    }
+    elQueueList.innerHTML = state.queue.map((t, i) => {
+      const art = coverArtUrl(t.coverArt, 64);
+      const isCurrent = i === state.index;
+      const artStyle = art ? `background-image:url("${art}")` : "";
+      const title = (t.title ?? "").replace(/</g, "&lt;");
+      const sub = `${(t.artist ?? "Unknown").replace(/</g, "&lt;")} — ${(t.album ?? "").replace(/</g, "&lt;")}`;
+      return `
+        <div class="queue-row${isCurrent ? " is-current" : ""}" data-idx="${i}">
+          <div class="queue-art" style="${artStyle}"></div>
+          <div class="queue-meta">
+            <div class="queue-row-title">${title}</div>
+            <div class="queue-row-sub">${sub}</div>
+          </div>
+          <div class="queue-row-dur">${fmtDuration(t.duration ?? 0)}</div>
+        </div>`;
+    }).join("");
+  };
+  elQueueBtn.addEventListener("click", () => {
+    const open = elQueuePanel.hasAttribute("hidden");
+    if (open) {
+      elQueuePanel.removeAttribute("hidden");
+      renderQueue(player.snapshot());
+    } else {
+      elQueuePanel.setAttribute("hidden", "");
+    }
+  });
+  elQueueClose.addEventListener("click", () => {
+    elQueuePanel.setAttribute("hidden", "");
+  });
+  elQueueList.addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".queue-row");
+    if (!row) return;
+    const idx = Number(row.dataset.idx);
+    if (Number.isFinite(idx)) player.jumpTo(idx);
+  });
   elSeek.addEventListener("input", () => {
     const snap = player.snapshot();
     if (snap.duration > 0) {
@@ -323,6 +464,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   // key so we only rebuild the URL (and trigger a network fetch) when the
   // cover actually changes. "" is the sentinel for "nothing playing".
   let lastCoverKey = "";
+  let lastQueueSig = "";
 
   const unsub = player.subscribe((state) => {
     if (state.current) {
@@ -350,6 +492,16 @@ export function mountPlayerDock(host: HTMLElement): () => void {
       elSeek.value = String((state.currentTime / state.duration) * 100);
     }
     elVol.value = String(state.volume);
+    // Re-render the queue panel only when the queue or current index actually
+    // changes — coverArtUrl() bakes a fresh token into every call, so
+    // re-rendering every timeupdate would reload all the cover images.
+    if (!elQueuePanel.hasAttribute("hidden")) {
+      const sig = `${state.index}|${state.queue.map(t => t.id).join(",")}`;
+      if (sig !== lastQueueSig) {
+        lastQueueSig = sig;
+        renderQueue(state);
+      }
+    }
   });
 
   return () => {

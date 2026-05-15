@@ -52,7 +52,7 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
             ${isMultiDisc ? `<span><strong>${discNums.length}</strong> discs</span>` : ""}
             <span><strong>${fmtDuration(totalDuration)}</strong> runtime</span>
             ${album.year ? `<span><strong>${album.year}</strong> released</span>` : ""}
-            ${album.genre ? `<span><strong>${escapeHtml(album.genre)}</strong> genre</span>` : ""}
+            ${album.genre ? `<span><strong><a href="#/genre/${encodeURIComponent(album.genre)}">${escapeHtml(album.genre)}</a></strong> genre</span>` : ""}
           </div>
           <div class="actions">
             <button class="btn primary" data-play-all>▶ Play album</button>
