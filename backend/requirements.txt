@@ -1,0 +1,23 @@
+# ---- Web framework ----------------------------------------------------------
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# ---- Settings ---------------------------------------------------------------
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+PyYAML>=6.0
+
+# ---- Auth -------------------------------------------------------------------
+bcrypt>=4.1.0
+python-jose[cryptography]>=3.3.0
+
+# ---- Audio metadata ---------------------------------------------------------
+mutagen>=1.47.0
+
+# ---- HTTP utilities ---------------------------------------------------------
+python-multipart>=0.0.6   # required by FastAPI for form uploads (future use)
+slowapi>=0.1.9
+
+# ---- Dev / optional ---------------------------------------------------------
+# pytest>=8.0.0           # uncomment for tests
+# httpx>=0.26.0           # uncomment for test client

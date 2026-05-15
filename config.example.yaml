@@ -1,0 +1,140 @@
+# =============================================================================
+# Muse — example configuration
+# =============================================================================
+#
+# Copy this file to `config.yaml` (next to the `backend/` package) and edit
+# to taste. Any setting may also be overridden via an environment variable
+# with the prefix MUSE_ (e.g. MUSE_DATABASE_PATH=/var/muse/muse.db).
+#
+# Settings precedence (highest first):
+#   1. environment variables  (MUSE_*)
+#   2. config.yaml
+#   3. built-in defaults
+# -----------------------------------------------------------------------------
+
+# --- Library --------------------------------------------------------------- #
+
+# One or more directories to scan for music. These appear as the
+# "music folders" in Subsonic clients (getMusicFolders).
+# Use absolute paths. Symlinks are NOT followed by default.
+music_folders:
+  - /srv/music
+  # - /mnt/nas/music
+
+# Audio file extensions Muse will consider during the scan.
+audio_extensions:
+  - mp3
+  - flac
+  - m4a
+  - aac
+  - ogg
+  - opus
+  - wma
+  - wav
+
+# --- Storage --------------------------------------------------------------- #
+
+# Where to keep the SQLite database. Should be on a local disk (not over a
+# network mount) for both performance and corruption safety.
+database_path: ./data/muse.db
+
+# Where to cache extracted album artwork as image files.
+artwork_cache_dir: ./data/artwork
+
+# --- Scanner --------------------------------------------------------------- #
+
+# Whether to kick off a full scan on every server start.
+# Recommended: false in production (use the /api/scan endpoint or a cron job).
+scan_on_startup: false
+
+# Number of worker threads used to parse metadata in parallel.
+# 4-8 is a good range; metadata parsing is CPU-light but I/O-heavy.
+scanner_workers: 4
+
+# How many tracks to batch into a single database transaction during scan.
+# Larger = faster; smaller = more granular crash recovery.
+scanner_batch_size: 200
+
+# --- Streaming ------------------------------------------------------------- #
+
+# Paths to ffmpeg and ffprobe. Use "ffmpeg"/"ffprobe" if they are on PATH,
+# or absolute paths for static builds or containers without system packages.
+ffmpeg_binary: ffmpeg
+ffprobe_binary: ffprobe
+
+# Master kill-switch for transcoding. When false, every stream request returns
+# the original file regardless of what the client asked for. Useful on
+# local-only installs where the transcoding CPU overhead isn't worth it.
+transcoding_enabled: true
+
+# Default format when the client doesn't request a specific one.
+# "raw" streams files in their original format without transcoding.
+# Set to "mp3" or "opus" to transcode by default (handy for mobile streaming).
+default_transcode_format: raw
+
+# Default bitrate (kbps) used when transcoding and the client didn't specify.
+default_transcode_bitrate: 192
+
+# Hard cap on the bitrate (kbps) the server will ever serve. Clients requesting
+# higher, or raw files above this rate, are transcoded down to this limit.
+# Unset (commented out) means no cap.
+# max_streaming_bitrate: 320
+
+# Buffer size for streaming chunks (bytes). 64 KB is a good default.
+stream_chunk_size: 65536
+
+# --- Auth ------------------------------------------------------------------ #
+
+# Initial admin credentials. Used ONLY to bootstrap the user table on first
+# run; changing them later in this file does NOT reset the admin password.
+# CHANGE THESE BEFORE EXPOSING THE SERVER.
+admin_username: admin
+admin_password: "CHANGE_ME"
+
+# JWT signing secret for the web UI session tokens. CHANGE THIS to a long
+# random string in production. If left as the default, a dev placeholder is
+# used — tokens survive restarts but are not safe for production.
+jwt_secret: "CHANGE_ME_generate_with_python3_-c_import_secrets_print_secrets.token_hex(32)"
+
+# How long web-UI JWTs stay valid (hours). Default: 720 (30 days).
+jwt_expiry_hours: 720
+
+# --- Auth Rate Limit ------------------------------------------------------------------ #
+
+# Rate limit for login attempts. Format: "count/period"
+# Examples: "5/minute", "100/hour", "3/second"
+# Increase if legitimate users are being blocked; decrease to harden against brute force.
+auth_rate_limits: "5/minute"
+
+
+# --- External integrations ------------------------------------------------- #
+
+# Optional Last.fm API key. When set, artist pages show a short biography
+# fetched from Last.fm. Without it, artist pages work fine but show no bio.
+# Get a free key at https://www.last.fm/api/account/create
+# lastfm_api_key: ""
+
+# --- Network --------------------------------------------------------------- #
+
+# CORS origins for the web UI. List EVERY origin (scheme + host + port) that
+# loads the frontend in a browser and calls this API.
+#
+# Do NOT use "*". With allow_credentials=True (required for JWT / auth headers
+# on cross-origin requests), Starlette refuses to emit the CORS header when
+# origins is "*", which silently breaks every request from the browser.
+cors_origins:
+  - "http://localhost:5173"     # Vite dev server
+  - "http://127.0.0.1:5173"
+#  - "https://yoursite.co.uk"   # production frontend
+#  - "http://10.0.10.5:8080"    # LAN-served frontend
+
+# Bind address and port. "0.0.0.0" listens on all interfaces.
+host: 0.0.0.0
+port: 4040
+
+# Display name sent to Subsonic clients (shown in some client UIs).
+server_name: Muse
+
+# --- Logging --------------------------------------------------------------- #
+
+log_level: INFO   # DEBUG | INFO | WARNING | ERROR

@@ -1,0 +1,40 @@
+# Python build / runtime cruft — never useful inside the image.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv
+venv
+*.egg-info
+
+# Test artefacts — the runtime image doesn't run pytest.
+tests
+.pytest_cache
+
+# Local-only files.
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+
+# Frontend — npm install + vite build run inside the build stage, so we
+# don't want host node_modules / a stale dist mixed in.
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Persistent data should never be baked into the image.
+data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Editor / OS noise.
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Project-local agent / IDE config.
+.claude

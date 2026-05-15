@@ -1,0 +1,49 @@
+services:
+  muse:
+    build: .
+    image: muse-server:latest
+    container_name: muse
+    ports:
+      - "4040:4040"
+    volumes:
+      # Persistent data: SQLite database and cached cover art / artist images.
+      - muse-data:/data
+      # Your music library. Change the left side to wherever your files live.
+      # The :ro suffix is recommended — Muse never writes to your music.
+      - /path/to/your/music:/music:ro
+    environment:
+      # Required. Generate one with:  openssl rand -hex 32
+      MUSE_JWT_SECRET: ${MUSE_JWT_SECRET}
+
+      # First-run admin credentials. Only applied when the DB is first
+      # created; changing them later does not reset the existing admin.
+      MUSE_ADMIN_USERNAME: admin
+      MUSE_ADMIN_PASSWORD: ${MUSE_ADMIN_PASSWORD}
+
+      # Scan the library automatically on every container start.
+      MUSE_SCAN_ON_STARTUP: "true"
+
+      # Optional: Last.fm API key (used for artist bios). Without it the
+      # artist page still works; it just shows no biography.
+      # MUSE_LASTFM_API_KEY: ${MUSE_LASTFM_API_KEY}
+
+      # Optional: cap streaming bitrate (kbps) — useful over mobile data.
+      # MUSE_MAX_STREAMING_BITRATE: "192"
+
+      # Optional: turn transcoding off entirely; raw files only.
+      # MUSE_TRANSCODING_ENABLED: "false"
+
+    restart: unless-stopped
+
+    # Honour the Dockerfile's healthcheck. We re-declare timing here so it
+    # can be tuned without rebuilding the image. Once healthy, dependent
+    # services (e.g. a reverse-proxy stack) can wait_for it cleanly.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4040/', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  muse-data:

@@ -1,0 +1,19 @@
+from .helpers import router, _handle_auth_error
+from ..deps import SubsonicAuthError
+from fastapi import Request
+from . import (
+    system,
+    users,
+    searching,
+    streaming,
+    annotation,
+    playlists,
+    albums,
+    browsing,
+    artist_info,
+    album_info,
+)
+
+
+async def subsonic_auth_exception_handler(request: Request, exc: SubsonicAuthError):
+    return _handle_auth_error(exc)

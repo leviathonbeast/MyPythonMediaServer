@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+
+name="muse"
+description="Muse media server"
+
+# Update this path if your install location differs
+MUSE_DIR="/root/myMediaServer"
+
+command="$MUSE_DIR/.venv/bin/python3"
+command_args="-m backend.main"
+command_background=true
+command_user="root"
+pidfile="/run/muse.pid"
+output_log="/var/log/muse/output.log"
+error_log="/var/log/muse/error.log"
+
+depend() {
+    need net
+    after localmount
+}
+
+start_pre() {
+    mkdir -p /var/log/muse
+    cd "$MUSE_DIR"
+    checkpath --directory --owner root:root --mode 0755 /var/log/muse
+}
