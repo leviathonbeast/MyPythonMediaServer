@@ -7,6 +7,7 @@ from fastapi import Depends, Query, Response
 from backend.db import queries
 from backend.db.connection import transaction
 from backend.core import library
+from datetime import datetime, timezone
 
 from .helpers import (
     _double_register,
@@ -19,20 +20,29 @@ from .helpers import (
 
 @_double_register("getPlayQueue")
 def get_play_queue(
-    id: str = Query(...),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
 
-    payload = queries.get_play_queue(id)
+    payload = queries.get_play_queue(ctx.user_id)
 
     if payload is None:
-        return responses.error(
-            responses.ERR_NOT_FOUND,
-            "Queue Not Found",
-            fmt=ctx.fmt,
-            callback=ctx.callback,
-        )
-    return responses.ok({"playQueue": payload}, fmt=ctx.fmt, callback=ctx.callback)
+        return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
+
+    play_queue = {
+        "current": (
+            library.make_track_id(payload["current_id"])
+            if payload["current_id"] is not None
+            else None
+        ),
+        "position": payload["position_ms"],
+        "username": payload["owner"],
+        "changed": datetime.fromtimestamp(
+            payload["changed_at"], tz=timezone.utc
+        ).isoformat(),
+        "changedBy": payload["changed_by"],
+        "entry": [library.track_to_subsonic(t) for t in payload["tracks"]],
+    }
+    return responses.ok({"playQueue": play_queue}, fmt=ctx.fmt, callback=ctx.callback)
 
 
 @_double_register("savePlayQueue")
