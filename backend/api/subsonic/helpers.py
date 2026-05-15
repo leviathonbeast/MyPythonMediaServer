@@ -24,7 +24,14 @@ def _user_row_to_subsonic(user: dict) -> dict:
     bool() converts them back to True/False for JSON/XML clients. The .get()
     calls with defaults handle the case where a column is missing from an older
     DB row that hasn't been migrated yet.
+
+    `folder` is a required list of accessible music-folder ids; we expose all
+    folders for every user since per-user folder restrictions aren't modelled
+    yet. An empty list would technically be valid but trips some clients that
+    treat empty == no access.
     """
+    from backend.db import queries
+    folder_ids = [f["id"] for f in queries.list_music_folders()]
     return {
         "username": user["username"],
         "email": user.get("email") or "",
@@ -42,6 +49,7 @@ def _user_row_to_subsonic(user: dict) -> dict:
         "jukeboxRole": bool(user.get("jukebox_role", False)),
         "shareRole": bool(user.get("share_role", False)),
         "videoConversionRole": bool(user.get("video_conversion_role", False)),
+        "folder": folder_ids,
     }
 
 

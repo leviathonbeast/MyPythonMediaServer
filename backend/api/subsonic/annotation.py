@@ -110,29 +110,42 @@ def _build_starred(user_id: int) -> dict:
 # Play count query
 @_double_register("scrobble")
 def scrobble(
-    id: str = Query(...),
+    id: list[str] = Query(...),
+    time: Optional[list[int]] = Query(default=None),  # noqa: ARG001 — accepted, unused
     submission: bool = Query(default=True),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
-    kind, rid = library.parse_id(id)
-    if kind != "track":
-        return responses.error(
-            responses.ERR_NOT_FOUND,
-            "Not a track id",
-            fmt=ctx.fmt,
-            callback=ctx.callback,
-        )
-    track = queries.get_track(rid)
-    if track is None:
-        return responses.error(
-            responses.ERR_NOT_FOUND,
-            "Track not found",
-            fmt=ctx.fmt,
-            callback=ctx.callback,
-        )
+    """
+    Register a playback or "now playing" event. (Subsonic 1.5.0; multi-id 1.8.0)
+
+    `id` may be repeated to scrobble several files at once. `time` (epoch ms)
+    is accepted for protocol compatibility but currently ignored — we use
+    server-side now() in queries.play_count.
+    """
+    # Resolve every id up front so a single bad value can be reported clearly.
+    resolved: list[int] = []
+    for raw in id:
+        kind, rid = library.parse_id(raw)
+        if kind != "track" or rid is None:
+            return responses.error(
+                responses.ERR_NOT_FOUND,
+                "Not a track id",
+                fmt=ctx.fmt,
+                callback=ctx.callback,
+            )
+        if queries.get_track(rid) is None:
+            return responses.error(
+                responses.ERR_NOT_FOUND,
+                "Track not found",
+                fmt=ctx.fmt,
+                callback=ctx.callback,
+            )
+        resolved.append(rid)
+
     if submission:
         with transaction():
-            queries.play_count(ctx.user_id, rid)
+            for rid in resolved:
+                queries.play_count(ctx.user_id, rid)
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 
@@ -151,7 +164,7 @@ def get_starred(
 # calls _build_starred at the top of this document
 @_double_register("getStarred2")
 def get_starred2(
-    musicFolderId: Optional[int] = Query(default=None),
+    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     return responses.ok(

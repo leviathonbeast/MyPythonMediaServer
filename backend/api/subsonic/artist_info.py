@@ -79,10 +79,22 @@ def get_artist_info_2(
 
 @_double_register("getRandomSongs")
 def get_random_songs(
+    size: int = Query(default=10, ge=1, le=500),
+    genre: Optional[str] = Query(default=None),
+    fromYear: Optional[int] = Query(default=None),
+    toYear: Optional[int] = Query(default=None),
+    musicFolderId: Optional[int] = Query(default=None),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
+    tracks = queries.list_random_songs(
+        size=size,
+        genre=genre,
+        from_year=fromYear,
+        to_year=toYear,
+        music_folder_id=musicFolderId,
+    )
     return responses.ok(
-        {"randomSongs": {"song": []}},
+        {"randomSongs": {"song": [library.track_to_subsonic(t) for t in tracks]}},
         fmt=ctx.fmt,
         callback=ctx.callback,
     )

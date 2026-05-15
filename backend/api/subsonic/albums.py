@@ -46,12 +46,16 @@ def _album_list_response(
 
 @_double_register("getAlbumList")
 def get_album_list(
+    # Spec marks `type` as required; we default to alphabeticalByName so that
+    # clients which omit it (and our internal smoke tests) get a usable result
+    # rather than a 422.
     type: str = Query(default="alphabeticalByName"),
     size: int = Query(default=10, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
     fromYear: Optional[int] = Query(default=None),
     toYear: Optional[int] = Query(default=None),
     genre: Optional[str] = Query(default=None),
+    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     return _album_list_response(
@@ -67,6 +71,7 @@ def get_album_list2(
     fromYear: Optional[int] = Query(default=None),
     toYear: Optional[int] = Query(default=None),
     genre: Optional[str] = Query(default=None),
+    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """ID3-tag-based version of getAlbumList. Same data shape for our purposes."""

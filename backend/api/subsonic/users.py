@@ -96,6 +96,8 @@ def create_user(
     podcastRole: bool = Query(default=False),
     shareRole: bool = Query(default=False),
     videoConversionRole: bool = Query(default=False),
+    maxBitRate: Optional[int] = Query(default=None),
+    musicFolderId: Optional[list[int]] = Query(default=None),  # noqa: ARG001 — accepted, per-user folder restrictions NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """Create a new user. Admin only. (Subsonic 1.1.0)"""
@@ -127,6 +129,8 @@ def create_user(
                 video_conversion_role=videoConversionRole,
             )
             queries.update_encrypted_password(new_id, encrypt_password(plaintext))
+            if maxBitRate is not None:
+                queries.update_user(username, max_bit_rate=maxBitRate)
     except sqlite3.IntegrityError:
         return responses.error(
             responses.ERR_GENERIC,
@@ -155,6 +159,7 @@ def update_user(
     shareRole: Optional[bool] = Query(default=None),
     videoConversionRole: Optional[bool] = Query(default=None),
     maxBitRate: Optional[int] = Query(default=None),
+    musicFolderId: Optional[list[int]] = Query(default=None),  # noqa: ARG001 — accepted, per-user folder restrictions NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """Update an existing user. Admin only. (Subsonic 1.10.1)"""

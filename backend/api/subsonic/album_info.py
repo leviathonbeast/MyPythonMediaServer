@@ -19,10 +19,10 @@ def _build_album_info(id: str, ctx: SubsonicContext, key: str) -> Response:
     """
     Shared body for getAlbumInfo and getAlbumInfo2.
 
-    The two Subsonic endpoints return identical data; the only difference is
-    the response envelope key ("artistInfo" vs "artistInfo2"). `key` selects
-    which one to emit so the lookup, bio fetch, and image fetch are written
-    only once.
+    Both endpoints emit the same payload under the `albumInfo` key per the
+    OpenSubsonic spec — `getAlbumInfo2` does NOT use a separate `albumInfo2`
+    element. `key` is plumbed in to keep the signature symmetric with the
+    artist_info helper.
     """
 
     kind, internal_id = library.parse_id(id)

@@ -57,6 +57,9 @@ async def stream(
     maxBitRate: Optional[int] = Query(default=None, ge=0, le=2000),
     format: Optional[str] = Query(default=None),
     timeOffset: Optional[float] = Query(default=None, ge=0),
+    size: Optional[str] = Query(default=None),  # noqa: ARG001 — video-only, accepted
+    estimateContentLength: bool = Query(default=False),  # noqa: ARG001 — accepted, not used
+    converted: bool = Query(default=False),  # noqa: ARG001 — video-only, accepted
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """

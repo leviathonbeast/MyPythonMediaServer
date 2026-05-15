@@ -402,6 +402,21 @@ def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> None:
     )
 
 
+def replace_playlist_tracks(playlist_id: int, track_ids: List[int]) -> None:
+    """Replace the entire track list of a playlist (used by createPlaylist update mode)."""
+    conn = get_conn()
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+    if track_ids:
+        conn.executemany(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
+            [(playlist_id, pos, tid) for pos, tid in enumerate(track_ids)],
+        )
+    now = int(time.time())
+    conn.execute(
+        "UPDATE playlists SET updated_at = ? WHERE id = ?", (now, playlist_id)
+    )
+
+
 def remove_tracks_from_playlist(playlist_id: int, positions: List[int]) -> None:
     conn = get_conn()
     conn.executemany(
@@ -810,6 +825,59 @@ def list_artists_missing_image() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Tracks
 # ---------------------------------------------------------------------------
+
+
+def list_random_songs(
+    size: int = 10,
+    genre: Optional[str] = None,
+    from_year: Optional[int] = None,
+    to_year: Optional[int] = None,
+    music_folder_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Random song selection for the getRandomSongs endpoint.
+
+    ORDER BY RANDOM() is fine for libraries up to a few hundred thousand
+    tracks but degrades on huge libraries. Honor optional genre/year/folder
+    filters from the Subsonic spec.
+    """
+    where: List[str] = []
+    params: List[Any] = []
+
+    if genre is not None:
+        where.append("t.genre = ? COLLATE NOCASE")
+        params.append(genre)
+    if from_year is not None:
+        where.append("t.year >= ?")
+        params.append(from_year)
+    if to_year is not None:
+        where.append("t.year <= ?")
+        params.append(to_year)
+    if music_folder_id is not None:
+        where.append("t.music_folder_id = ?")
+        params.append(music_folder_id)
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = (
+        get_conn()
+        .execute(
+            f"""
+        SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
+               t.artist_id, ar.name AS artist_name,
+               t.album_id,  al.name AS album_name, al.cover_art_id
+          FROM tracks t
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN albums  al ON al.id = t.album_id
+         {where_sql}
+      ORDER BY RANDOM()
+         LIMIT ?
+        """,
+            (*params, size),
+        )
+        .fetchall()
+    )
+    return _rows_to_dicts(rows)
 
 
 def list_song_by_genre(

@@ -416,8 +416,7 @@ class TestPlaylistsEndpoints:
     def test_deletePlaylist_removes_it(self, client):
         # Create, then delete, then verify it's gone.
         pl = _ok(_sub(client, "createPlaylist", name="To Be Deleted"))["playlist"]
-        # Server uses `playlist_id`, not the spec's `id` — known divergence.
-        _ok(_sub(client, "deletePlaylist", playlist_id=str(pl["id"])))
+        _ok(_sub(client, "deletePlaylist", id=str(pl["id"])))
         _err(_sub(client, "getPlaylist", id=str(pl["id"])), code=70)
 
 
@@ -528,9 +527,6 @@ class TestAuthErrors:
 
 class TestMissingEndpoints:
 
-    @pytest.mark.xfail(
-        reason="getPlayQueue/savePlayQueue not implemented", strict=False
-    )
     def test_getPlayQueue(self, client):
         _ok(_sub(client, "getPlayQueue"))
 
@@ -595,9 +591,6 @@ class TestMissingEndpoints:
         body = _ok(_sub(client, "getShares"))
         assert "shares" in body
 
-    @pytest.mark.xfail(
-        reason="search2 (legacy fallback for old clients) not implemented", strict=False
-    )
     def test_search2(self, client):
         body = _ok(_sub(client, "search2", query=""))
         assert "searchResult2" in body

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import Depends, Query, Response
 
 from backend.core import search
@@ -24,6 +26,7 @@ def do_search3(
     artistOffset: int = Query(default=0, ge=0),
     albumOffset: int = Query(default=0, ge=0),
     songOffset: int = Query(default=0, ge=0),
+    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, multi-folder scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     result = search.search3(
@@ -44,6 +47,7 @@ def do_search2(
     artistOffset: int = Query(default=0, ge=0),
     albumOffset: int = Query(default=0, ge=0),
     songOffset: int = Query(default=0, ge=0),
+    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, multi-folder scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     result = search.search3(

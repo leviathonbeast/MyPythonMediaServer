@@ -21,12 +21,38 @@ from .helpers import (
 
 
 @_double_register("getPlaylists")
-def get_playlists(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
-    # query playlists table, return owner's + public playlists.
-    payload = queries.list_playlists(ctx.user_id)
+def get_playlists(
+    username: Optional[str] = Query(default=None),
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+    """
+    List playlists. (Subsonic 1.0.0; `username` since 1.8.0)
 
+    With no `username`, returns playlists owned by the caller plus all public
+    ones. If `username` is given, returns that user's playlists — only admins
+    may impersonate another user.
+    """
+    target_user_id = ctx.user_id
+    if username and username != ctx.username:
+        if not ctx.is_admin:
+            return responses.error(
+                responses.ERR_NOT_AUTHORIZED,
+                "Admin required to view another user's playlists",
+                fmt=ctx.fmt,
+                callback=ctx.callback,
+            )
+        other = queries.get_user_by_username(username)
+        if other is None:
+            return responses.error(
+                responses.ERR_NOT_FOUND,
+                f"User '{username}' not found",
+                fmt=ctx.fmt,
+                callback=ctx.callback,
+            )
+        target_user_id = other["id"]
+
+    payload = queries.list_playlists(target_user_id)
     playlists = [_playlist_row_to_subsonic(row) for row in payload]
-
     return responses.ok(
         {"playlists": {"playlist": playlists}}, fmt=ctx.fmt, callback=ctx.callback
     )
@@ -37,14 +63,25 @@ def get_playlists(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
 
 @_double_register("getPlaylist")
 def get_playlist(
-    id: str = Query(...), ctx: SubsonicContext = Depends(subsonic_context)
+    id: int = Query(...), ctx: SubsonicContext = Depends(subsonic_context)
 ) -> Response:
-    # load playlist + entries.
     payload = queries.get_playlist(id)
     if payload is None:
         return responses.error(
             responses.ERR_NOT_FOUND,
-            "Playlists not found",
+            "Playlist not found",
+            fmt=ctx.fmt,
+            callback=ctx.callback,
+        )
+    # Caller must own the playlist, be admin, or the playlist must be public.
+    if (
+        payload["owner_id"] != ctx.user_id
+        and not payload.get("is_public")
+        and not ctx.is_admin
+    ):
+        return responses.error(
+            responses.ERR_NOT_AUTHORIZED,
+            "Not authorized to view this playlist",
             fmt=ctx.fmt,
             callback=ctx.callback,
         )
@@ -57,14 +94,56 @@ def get_playlist(
 
 @_double_register("createPlaylist")
 def create_playlist(
-    name: str = Query(...),
-    songId: Optional[list[int]] = Query(default=[]),
+    name: Optional[str] = Query(default=None),
+    playlistId: Optional[int] = Query(default=None),
+    songId: Optional[list[str]] = Query(default=[]),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
-    # insert playlist + tracks.
+    """
+    Create or replace a playlist. (Subsonic 1.2.0)
+
+    If `playlistId` is given the existing playlist is replaced with the new
+    song set; otherwise a new playlist is created with `name`. `songId`
+    values are accepted in Subsonic prefixed form ("tr-123") or as raw ints.
+    """
+    track_ids: list[int] = []
+    for raw in (songId or []):
+        _, rid = library.parse_id(str(raw))
+        if rid is not None:
+            track_ids.append(rid)
+
     with transaction():
-        playlist_id = queries.create_playlist(name, ctx.user_id, songId)
-    playlist = queries.get_playlist(playlist_id)
+        if playlistId is not None:
+            existing = queries.get_playlist(playlistId)
+            if existing is None:
+                return responses.error(
+                    responses.ERR_NOT_FOUND,
+                    "Playlist not found",
+                    fmt=ctx.fmt,
+                    callback=ctx.callback,
+                )
+            if existing["owner_id"] != ctx.user_id and not ctx.is_admin:
+                return responses.error(
+                    responses.ERR_NOT_AUTHORIZED,
+                    "Not your playlist",
+                    fmt=ctx.fmt,
+                    callback=ctx.callback,
+                )
+            queries.replace_playlist_tracks(playlistId, track_ids)
+            if name is not None:
+                queries.update_playlist(playlistId, name, None, None)
+            new_id = playlistId
+        else:
+            if not name:
+                return responses.error(
+                    responses.ERR_PARAMETER,
+                    "Required parameter 'name' is missing",
+                    fmt=ctx.fmt,
+                    callback=ctx.callback,
+                )
+            new_id = queries.create_playlist(name, ctx.user_id, track_ids)
+
+    playlist = queries.get_playlist(new_id)
     return responses.ok(
         {"playlist": _playlist_row_to_subsonic(playlist)},
         fmt=ctx.fmt,
@@ -77,7 +156,7 @@ def update_playlist(
     playlistId: int = Query(...),
     name: Optional[str] = Query(default=None),
     comment: Optional[str] = Query(default=None),
-    public: Optional[bool] = Query(default=True),
+    public: Optional[bool] = Query(default=None),
     songIdToAdd: Optional[list[str]] = Query(default=[]),
     songIndexToRemove: Optional[list[int]] = Query(default=[]),
     ctx: SubsonicContext = Depends(subsonic_context),
@@ -113,15 +192,14 @@ def update_playlist(
 
 @_double_register("deletePlaylist")
 def delete_playlist(
-    playlist_id: int = Query(...), ctx: SubsonicContext = Depends(subsonic_context)
+    id: int = Query(...), ctx: SubsonicContext = Depends(subsonic_context)
 ) -> Response:
-
     with transaction():
-        row = queries.delete_playlist(playlist_id, ctx.user_id)
+        row = queries.delete_playlist(id, ctx.user_id)
     if not row:
         return responses.error(
             responses.ERR_NOT_FOUND,
-            "playlist not found",
+            "Playlist not found",
             fmt=ctx.fmt,
             callback=ctx.callback,
         )
