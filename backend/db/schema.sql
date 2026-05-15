@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS albums (
     artist_id    INTEGER NOT NULL,
     name         TEXT NOT NULL,
     name_lower   TEXT NOT NULL,
+    sort_name    TEXT,                         -- name with leading punct/articles stripped
     year         INTEGER,
     genre        TEXT,
     track_count  INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_albums_year    ON albums(year);
 CREATE INDEX IF NOT EXISTS idx_albums_genre   ON albums(genre);
 CREATE INDEX IF NOT EXISTS idx_albums_created ON albums(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_albums_name    ON albums(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_albums_sort    ON albums(sort_name COLLATE NOCASE);
 
 -- ---------------------------------------------------------------------------
 -- tracks

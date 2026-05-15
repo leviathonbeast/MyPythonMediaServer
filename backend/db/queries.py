@@ -21,11 +21,28 @@ Performance notes:
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .connection import get_conn
+
+
+_LEADING_ARTICLE_RE = re.compile(r'^(the|a|an)\s+', re.IGNORECASE)
+
+
+def normalize_sort_name(name: str) -> str:
+    """Compute an alphabetical sort key matching Apple Music's convention:
+    leading English articles are stripped ('The Wall' sorts under 'W'),
+    but symbol-leading names keep their symbol and get prefixed with '~'
+    so they sort after Z ('$0', '& Juliet', '( D E S ) O L Λ T E' all land
+    at the bottom of A-Z lists rather than the top).
+    """
+    s = _LEADING_ARTICLE_RE.sub('', name.strip(), count=1)
+    if not s or not s[:1].isalnum():
+        s = '~' + (s or name)
+    return s
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -617,18 +634,19 @@ def upsert_album(
     populates an album initially seeded from a tag-less file.
     """
     name_lower = name.strip().lower()
+    sort_name = normalize_sort_name(name)
     conn = get_conn()
     now = int(time.time())
     conn.execute(
         """
-        INSERT INTO albums (artist_id, name, name_lower, year, genre, release_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(artist_id, name_lower) DO UPDATE SET
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
             release_type = COALESCE(excluded.release_type, albums.release_type)
         """,
-        (artist_id, name, name_lower, year, genre, release_type, now),
+        (artist_id, name, name_lower, sort_name, year, genre, release_type, now),
     )
     row = conn.execute(
         "SELECT id FROM albums WHERE artist_id = ? AND name_lower = ?",
@@ -675,10 +693,10 @@ def list_albums(
     """
     order_clause = {
         "newest": "al.created_at DESC",
-        "alphabeticalByName": "al.name COLLATE NOCASE ASC",
+        "alphabeticalByName": "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
         "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
-        "byYear": "al.year ASC, al.name COLLATE NOCASE ASC",
-        "byGenre": "al.name COLLATE NOCASE ASC",
+        "byYear": "al.year ASC, COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
+        "byGenre": "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
         "random": "RANDOM()",
         "frequent": (
             "(SELECT COALESCE(SUM(pc.play_count), 0) FROM tracks t "

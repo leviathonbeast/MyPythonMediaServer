@@ -292,6 +292,67 @@ def _migration_009_encrypted_password(conn: sqlite3.Connection) -> None:
         pass  # idempotent
 
 
+def _migration_012_album_sort_name(conn: sqlite3.Connection) -> None:
+    """Add albums.sort_name for clean alphabetical ordering.
+
+    Without this column, alphabeticalByName puts albums starting with
+    punctuation at the top of the list. sort_name strips leading non-alphanumerics
+    and English articles so '$ome $exy $ongs' sorts under 'o' and 'The Wall'
+    sorts under 'W'.
+    """
+    from .queries import normalize_sort_name
+
+    try:
+        conn.execute("ALTER TABLE albums ADD COLUMN sort_name TEXT")
+    except Exception:
+        pass  # idempotent
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_albums_sort ON albums(sort_name COLLATE NOCASE)"
+    )
+
+    rows = conn.execute("SELECT id, name FROM albums WHERE sort_name IS NULL").fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE albums SET sort_name = ? WHERE id = ?",
+            (normalize_sort_name(row["name"]), row["id"]),
+        )
+
+
+def _migration_014_resort_apple_music_style(conn: sqlite3.Connection) -> None:
+    """Re-backfill albums.sort_name with the Apple Music sort convention.
+
+    Earlier migrations stripped leading punctuation so '$ome' sorted under 'o'.
+    Apple Music instead keeps the leading symbol and pushes the whole name to
+    the end of the A-Z list. The current normalize_sort_name reflects that.
+    """
+    from .queries import normalize_sort_name
+
+    rows = conn.execute("SELECT id, name FROM albums").fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE albums SET sort_name = ? WHERE id = ?",
+            (normalize_sort_name(row["name"]), row["id"]),
+        )
+
+
+def _migration_013_resort_symbols_last(conn: sqlite3.Connection) -> None:
+    """Re-backfill albums.sort_name so symbol-leading names sort after Z.
+
+    Migration 012 left names like '&' at the top of alphabeticalByName lists.
+    The normalize_sort_name helper now prefixes such names with '~' so they
+    fall to the end. This re-runs the backfill across every album.
+    """
+    from .queries import normalize_sort_name
+
+    rows = conn.execute("SELECT id, name FROM albums").fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE albums SET sort_name = ? WHERE id = ?",
+            (normalize_sort_name(row["name"]), row["id"]),
+        )
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 MIGRATIONS: List[Migration] = [
     (1, _migration_001_initial),
@@ -305,6 +366,9 @@ MIGRATIONS: List[Migration] = [
     (9, _migration_009_encrypted_password),
     (10, _migration_010_play_queue),
     (11, _migration_011_user_disabled),
+    (12, _migration_012_album_sort_name),
+    (13, _migration_013_resort_symbols_last),
+    (14, _migration_014_resort_apple_music_style),
 ]
 
 
