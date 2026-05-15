@@ -10,7 +10,6 @@
 // albums. We don't poll on a timer; refresh is event-driven.
 
 import { libraryStats } from "../../api";
-import { fmtDuration } from "../../player";
 import { escapeHtml } from "../_util";
 
 export interface StatsSection {
@@ -44,7 +43,7 @@ export async function renderStatsSection(host: HTMLElement): Promise<StatsSectio
           ${statBlock("Artists",        String(s.artists))}
           ${statBlock("Albums",         String(s.albums))}
           ${statBlock("Tracks",         String(s.tracks))}
-          ${statBlock("Total runtime",  fmtDuration(s.total_duration_seconds))}
+          ${statBlock("Total runtime",  fmtRuntime(s.total_duration_seconds))}
         </div>
       `;
     } catch (e) {
@@ -61,6 +60,16 @@ export async function renderStatsSection(host: HTMLElement): Promise<StatsSectio
     // by the router on view-unmount, taking everything with it.
     cleanup: () => { /* noop */ },
   };
+}
+
+function fmtRuntime(totalSeconds: number | undefined | null): string {
+  if (!totalSeconds || !Number.isFinite(totalSeconds)) return "0 SECS";
+  const total = Math.floor(totalSeconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return `${days}d ${hours}h ${mins}m ${secs}s`;
 }
 
 function statBlock(label: string, value: string): string {
