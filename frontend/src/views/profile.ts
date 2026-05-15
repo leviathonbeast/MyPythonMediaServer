@@ -48,6 +48,18 @@ export async function renderProfile(host: HTMLElement): Promise<void> {
           <div class="label">— Role</div>
           <div class="folio" style="font-size:clamp(1.5rem,3vw,2.5rem)">${user.is_admin ? "Admin" : "User"}</div>
         </div>
+        <div>
+          <div class="label">— Joined</div>
+          <div style="font-family:var(--font-mono);font-size:var(--t-body);color:var(--muted);padding-top:.5rem">
+            ${escapeHtml(user.created_at ? new Date(user.created_at * 1000).toLocaleDateString() : "—")}
+          </div>
+        </div>
+        <div>
+          <div class="label">— Password set</div>
+          <div style="font-family:var(--font-mono);font-size:var(--t-body);color:var(--muted);padding-top:.5rem">
+            ${escapeHtml(user.password_changed_at ? new Date(user.password_changed_at * 1000).toLocaleDateString() : "—")}
+          </div>
+        </div>
       </div>
     </div>
 

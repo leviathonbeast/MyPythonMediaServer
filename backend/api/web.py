@@ -93,6 +93,7 @@ class UserCreateRequest(BaseModel):
 class UserPatchRequest(BaseModel):
     is_admin: Optional[bool] = None
     password: Optional[str] = None
+    disabled: Optional[bool] = None
 
 
 class PasswordChangeRequest(BaseModel):
@@ -128,8 +129,16 @@ def login(body: LoginRequest, request: Request):
 
 @router.get("/me")
 def me(user=Depends(jwt_user)):
-    """Return the JWT payload — lets the frontend refresh its local state."""
-    return user
+    """JWT payload merged with persisted account fields (joined-at, password-changed-at)."""
+    db_user = queries.get_user_by_id(int(user["sub"]))
+    if db_user is None:
+        # Token outlived the account — treat as unauth so the SPA logs out.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account no longer exists")
+    return {
+        **user,
+        "created_at": db_user.get("created_at"),
+        "password_changed_at": db_user.get("password_changed_at"),
+    }
 
 
 @router.post("/me/password")
@@ -409,12 +418,19 @@ def users_patch(user_id: int, body: UserPatchRequest, admin: dict = Depends(jwt_
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You cannot remove your own admin role",
         )
+    if body.disabled is not None and user_id == int(admin["sub"]) and body.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot disable your own account",
+        )
     if body.password is not None and not body.password:
         raise HTTPException(status_code=400, detail="Password must not be empty")
 
     with transaction():
         if body.is_admin is not None:
             queries.set_user_admin(user_id, body.is_admin)
+        if body.disabled is not None:
+            queries.set_user_disabled(user_id, body.disabled)
         if body.password is not None:
             queries.update_user_password(user_id, auth_core.hash_password(body.password))
             queries.update_encrypted_password(user_id, auth_core.encrypt_password(body.password))

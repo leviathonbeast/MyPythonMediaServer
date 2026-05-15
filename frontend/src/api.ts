@@ -714,6 +714,8 @@ export interface MeInfo {
   is_admin: boolean;
   iat: number;
   exp: number;
+  created_at: number | null;
+  password_changed_at: number | null;
 }
 
 export async function getMe(): Promise<MeInfo> {
@@ -731,6 +733,7 @@ export interface UserRecord {
   id: number;
   username: string;
   is_admin: boolean;
+  disabled: boolean;
   created_at: number;
   password_changed_at: number | null;
 }
@@ -749,7 +752,7 @@ export async function createUser(
 
 export async function patchUser(
   id: number,
-  patch: { is_admin?: boolean; password?: string },
+  patch: { is_admin?: boolean; password?: string; disabled?: boolean },
 ): Promise<UserRecord> {
   return apiPatch<UserRecord>(`/api/users/${id}`, patch);
 }

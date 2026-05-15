@@ -65,6 +65,7 @@ async function refreshUsers(host: HTMLElement): Promise<void> {
           <tr>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Username</th>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Role</th>
+            <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Status</th>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Joined</th>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Password set</th>
             <th style="border-bottom:1px solid var(--rule)"></th>
@@ -106,6 +107,23 @@ async function refreshUsers(host: HTMLElement): Promise<void> {
       btn.disabled = true;
       try {
         await patchUser(id, { is_admin: makeAdmin });
+        await refreshUsers(host);
+      } catch (e) {
+        alert((e as Error).message);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  el.querySelectorAll<HTMLButtonElement>("[data-toggle-disabled]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.toggleDisabled);
+      const disable = btn.dataset.makeDisabled === "1";
+      const uname = btn.dataset.username ?? "this user";
+      if (disable && !confirm(`Disable ${uname}? They will be unable to log in.`)) return;
+      btn.disabled = true;
+      try {
+        await patchUser(id, { disabled: disable });
         await refreshUsers(host);
       } catch (e) {
         alert((e as Error).message);
@@ -192,6 +210,14 @@ function userRowHtml(u: UserRecord, isSelf: boolean): string {
     : `<button class="btn ghost" data-toggle-admin="${u.id}" data-make-admin="1"
          style="padding:.35rem .65rem;font-size:var(--t-micro)">Make admin</button>`;
 
+  const disableToggle = isSelf ? "" : u.disabled
+    ? `<button class="btn ghost" data-toggle-disabled="${u.id}" data-make-disabled="0"
+         data-username="${escapeHtml(u.username)}"
+         style="padding:.35rem .65rem;font-size:var(--t-micro)">Enable</button>`
+    : `<button class="btn ghost" data-toggle-disabled="${u.id}" data-make-disabled="1"
+         data-username="${escapeHtml(u.username)}"
+         style="padding:.35rem .65rem;font-size:var(--t-micro);color:var(--accent)">Disable</button>`;
+
   const resetPw = `<button class="btn ghost" data-reset-pw="${u.id}"
     style="padding:.35rem .65rem;font-size:var(--t-micro)">Reset pw</button>`;
 
@@ -199,14 +225,21 @@ function userRowHtml(u: UserRecord, isSelf: boolean): string {
     `<button class="btn ghost" data-del="${u.id}" data-username="${escapeHtml(u.username)}"
        style="padding:.35rem .65rem;font-size:var(--t-micro);color:var(--accent)">Delete</button>`;
 
+  const statusLabel = u.disabled
+    ? `<span style="color:var(--accent)">Disabled</span>`
+    : `Active`;
+
   return `
-    <tr>
+    <tr style="${u.disabled ? "opacity:.55" : ""}">
       <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-display);border-bottom:1px solid var(--rule)">
         ${escapeHtml(u.username)}
         ${isSelf ? `<span class="label" style="margin-left:.5rem">— you</span>` : ""}
       </td>
       <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-mono);font-size:var(--t-small);border-bottom:1px solid var(--rule)">
         ${u.is_admin ? "Admin" : "User"}
+      </td>
+      <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-mono);font-size:var(--t-small);border-bottom:1px solid var(--rule)">
+        ${statusLabel}
       </td>
       <td style="padding:.75rem 1rem .75rem 0;font-family:var(--font-mono);font-size:var(--t-small);color:var(--muted);border-bottom:1px solid var(--rule)">
         ${escapeHtml(joined)}
@@ -217,6 +250,7 @@ function userRowHtml(u: UserRecord, isSelf: boolean): string {
       <td style="padding:.75rem 0;border-bottom:1px solid var(--rule)">
         <div style="display:flex;gap:.4rem;justify-content:flex-end;flex-wrap:wrap">
           ${adminToggle}
+          ${disableToggle}
           ${resetPw}
           ${delBtn}
         </div>
