@@ -17,6 +17,24 @@ from .helpers import (
 )
 
 
+@_double_register("getPlayQueue")
+def get_play_queue(
+    id: str = Query(...),
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+
+    payload = queries.get_play_queue(id)
+
+    if payload is None:
+        return responses.error(
+            responses.ERR_NOT_FOUND,
+            "Queue Not Found",
+            fmt=ctx.fmt,
+            callback=ctx.callback,
+        )
+    return responses.ok({"playQueue": payload}, fmt=ctx.fmt, callback=ctx.callback)
+
+
 @_double_register("savePlayQueue")
 def save_play_queue(
     id: list[str] = Query(default=[]),

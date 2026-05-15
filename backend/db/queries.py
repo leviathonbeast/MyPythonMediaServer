@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .connection import get_conn
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -71,8 +70,10 @@ def unstar_item(user_id: int, target_type: str, target_id: int) -> None:
 
 def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
     """All of a user's stars, hydrated with the target's display fields in one query."""
-    rows = get_conn().execute(
-        """
+    rows = (
+        get_conn()
+        .execute(
+            """
         SELECT s.target_type, s.target_id, s.starred_at,
 
                t.id              AS track_id,
@@ -115,8 +116,10 @@ def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
          WHERE s.user_id = ?
       ORDER BY s.starred_at DESC
         """,
-        (user_id,),
-    ).fetchall()
+            (user_id,),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -127,9 +130,11 @@ def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
 
 def list_music_folders() -> List[Dict[str, Any]]:
     """All configured music folders. Used by getMusicFolders."""
-    rows = get_conn().execute(
-        "SELECT id, name, path FROM music_folders ORDER BY name"
-    ).fetchall()
+    rows = (
+        get_conn()
+        .execute("SELECT id, name, path FROM music_folders ORDER BY name")
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -141,31 +146,37 @@ def list_music_folders_with_counts() -> List[Dict[str, Any]]:
     zero tracks still appear (track_count = 0). The aggregate is cheap
     against the (music_folder_id) index.
     """
-    rows = get_conn().execute(
-        """
+    rows = get_conn().execute("""
         SELECT f.id, f.name, f.path, COUNT(t.id) AS track_count
           FROM music_folders f
      LEFT JOIN tracks t ON t.music_folder_id = f.id
       GROUP BY f.id
       ORDER BY f.name
-        """
-    ).fetchall()
+        """).fetchall()
     return _rows_to_dicts(rows)
 
 
 def get_music_folder(folder_id: int) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        "SELECT id, name, path FROM music_folders WHERE id = ?",
-        (folder_id,),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            "SELECT id, name, path FROM music_folders WHERE id = ?",
+            (folder_id,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def get_music_folder_by_path(path: str) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        "SELECT id, name, path FROM music_folders WHERE path = ?",
-        (path,),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            "SELECT id, name, path FROM music_folders WHERE path = ?",
+            (path,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
@@ -190,9 +201,7 @@ def delete_music_folder(folder_id: int) -> bool:
     Aggregate cleanup of newly-empty albums/artists is the GC's job, not
     ours — call run_gc() afterwards.
     """
-    cur = get_conn().execute(
-        "DELETE FROM music_folders WHERE id = ?", (folder_id,)
-    )
+    cur = get_conn().execute("DELETE FROM music_folders WHERE id = ?", (folder_id,))
     return cur.rowcount > 0
 
 
@@ -215,10 +224,14 @@ def play_count(user_id: int, track_id: int) -> None:
 
 
 def get_playcount_by_user(user_id: int, track_id: int) -> int:
-    row = get_conn().execute(
-        "SELECT play_count FROM play_counts WHERE user_id = ? AND track_id = ?",
-        (user_id, track_id),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            "SELECT play_count FROM play_counts WHERE user_id = ? AND track_id = ?",
+            (user_id, track_id),
+        )
+        .fetchone()
+    )
     return row["play_count"] if row else 0
 
 
@@ -229,8 +242,10 @@ def get_playcount_by_user(user_id: int, track_id: int) -> int:
 
 def list_playlists(user_id: int) -> List[Dict[str, Any]]:
     """Return playlists owned by user plus all public ones."""
-    rows = get_conn().execute(
-        """
+    rows = (
+        get_conn()
+        .execute(
+            """
         SELECT p.id, p.name, p.comment, p.is_public,
                p.created_at, p.updated_at, p.owner_id,
                u.username AS owner,
@@ -243,8 +258,10 @@ def list_playlists(user_id: int) -> List[Dict[str, Any]]:
          WHERE p.owner_id = ? OR p.is_public = 1
       GROUP BY p.id
         """,
-        (user_id,),
-    ).fetchall()
+            (user_id,),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -387,13 +404,57 @@ def remove_tracks_from_playlist(playlist_id: int, positions: List[int]) -> None:
 
     conn.executemany(
         "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
-        [(new_pos, playlist_id, track_id) for new_pos, (track_id,) in enumerate(remaining)],
+        [
+            (new_pos, playlist_id, track_id)
+            for new_pos, (track_id,) in enumerate(remaining)
+        ],
     )
 
 
 # ---------------------------------------------------------------------------
 # Play queue (Subsonic savePlayQueue / getPlayQueue)
 # ---------------------------------------------------------------------------
+
+
+def get_play_queue(user_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_conn()
+
+    header = conn.execute(
+        """
+        SELECT p.*, u.username AS owner
+          FROM play_queues p
+     LEFT JOIN users u ON u.id = p.user_id
+         WHERE p.user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+
+    tracks = conn.execute(
+        """
+        SELECT t.*,
+       ar.name AS artist_name,
+       al.name AS album_name,
+       al.cover_art_id AS cover_art_id
+  FROM play_queue_entries e
+LEFT JOIN tracks  t ON e.track_id = t.id
+LEFT JOIN artists ar ON ar.id = t.artist_id
+LEFT JOIN albums  al ON al.id = t.album_id
+WHERE e.user_id = ?
+ORDER BY e.position
+    """,
+        (user_id,),
+    ).fetchall()
+
+    if header is None:
+        return None
+    result = _row_to_dict(header)
+    result["tracks"] = _rows_to_dicts(tracks)
+    result["trackcount"] = len(result["tracks"])
+    result["duration"] = sum(track["duration"] or 0 for track in result["tracks"])
+    return result
+
+
+# {"current": ..., "position": ..., "changed": ..., "changedBy": ..., "username": ..., "tracks": [<rows for track_to_subsonic>]}
 
 
 def save_play_queue(
@@ -457,8 +518,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
     Subsonic's getIndexes wants this exact shape. Numbers and symbols go
     into a "#" bucket.
     """
-    rows = get_conn().execute(
-        """
+    rows = get_conn().execute("""
         SELECT a.id, a.name, COUNT(al.id) AS album_count,
                COALESCE(a.sort_name, a.name) AS sort_name,
                (SELECT al2.cover_art_id
@@ -471,8 +531,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
           JOIN albums al ON al.artist_id = a.id
       GROUP BY a.id, a.name, a.sort_name
       ORDER BY sort_name COLLATE NOCASE
-        """
-    ).fetchall()
+        """).fetchall()
 
     indexed: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -493,17 +552,20 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
 
 
 def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        "SELECT id, name, album_count FROM artists WHERE id = ?",
-        (artist_id,),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            "SELECT id, name, album_count FROM artists WHERE id = ?",
+            (artist_id,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def list_genre_count() -> List[Dict[str, Any]]:
     """All genres with their album and track counts."""
-    rows = get_conn().execute(
-        """
+    rows = get_conn().execute("""
         SELECT genre,
                COUNT(DISTINCT album_id) AS albumCount,
                COUNT(*) AS songCount
@@ -511,23 +573,26 @@ def list_genre_count() -> List[Dict[str, Any]]:
          WHERE genre IS NOT NULL
       GROUP BY genre
       ORDER BY genre COLLATE NOCASE
-        """
-    ).fetchall()
+        """).fetchall()
     return _rows_to_dicts(rows)
 
 
 def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
     """All albums by an artist, ordered by year then name."""
-    rows = get_conn().execute(
-        """
+    rows = (
+        get_conn()
+        .execute(
+            """
         SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
                cover_art_id, created_at
           FROM albums
          WHERE artist_id = ?
       ORDER BY year, name COLLATE NOCASE
         """,
-        (artist_id,),
-    ).fetchall()
+            (artist_id,),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -573,8 +638,10 @@ def upsert_album(
 
 
 def get_album(album_id: int) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        """
+    row = (
+        get_conn()
+        .execute(
+            """
         SELECT al.id, al.name, al.year, al.genre, al.release_type, al.track_count,
                al.duration, al.cover_art_id, al.created_at, al.artist_id,
                ar.name AS artist_name
@@ -582,8 +649,10 @@ def get_album(album_id: int) -> Optional[Dict[str, Any]]:
           JOIN artists ar ON ar.id = al.artist_id
          WHERE al.id = ?
         """,
-        (album_id,),
-    ).fetchone()
+            (album_id,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
@@ -605,12 +674,12 @@ def list_albums(
     pre-compute a random sample table or use rowid sampling.
     """
     order_clause = {
-        "newest":               "al.created_at DESC",
-        "alphabeticalByName":   "al.name COLLATE NOCASE ASC",
+        "newest": "al.created_at DESC",
+        "alphabeticalByName": "al.name COLLATE NOCASE ASC",
         "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
-        "byYear":               "al.year ASC, al.name COLLATE NOCASE ASC",
-        "byGenre":              "al.name COLLATE NOCASE ASC",
-        "random":               "RANDOM()",
+        "byYear": "al.year ASC, al.name COLLATE NOCASE ASC",
+        "byGenre": "al.name COLLATE NOCASE ASC",
+        "random": "RANDOM()",
         "frequent": (
             "(SELECT COALESCE(SUM(pc.play_count), 0) FROM tracks t "
             " JOIN play_counts pc ON pc.track_id = t.id "
@@ -637,8 +706,10 @@ def list_albums(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-    rows = get_conn().execute(
-        f"""
+    rows = (
+        get_conn()
+        .execute(
+            f"""
         SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
                al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
           FROM albums al
@@ -647,8 +718,10 @@ def list_albums(
       ORDER BY {order_clause}
          LIMIT ? OFFSET ?
         """,
-        (*params, size, offset),
-    ).fetchall()
+            (*params, size, offset),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -706,9 +779,13 @@ def list_artists_missing_image() -> List[Dict[str, Any]]:
     Used by the artwork-recovery sweep. We skip the Various-Artists sentinel
     (album_count 0) because Deezer search would always miss on it.
     """
-    rows = get_conn().execute(
-        "SELECT id, name FROM artists WHERE image_id IS NULL AND album_count > 0"
-    ).fetchall()
+    rows = (
+        get_conn()
+        .execute(
+            "SELECT id, name FROM artists WHERE image_id IS NULL AND album_count > 0"
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -723,8 +800,10 @@ def list_song_by_genre(
     offset: Optional[int],
     music_folder_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    rows = get_conn().execute(
-        """
+    rows = (
+        get_conn()
+        .execute(
+            """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
@@ -735,8 +814,10 @@ def list_song_by_genre(
          WHERE t.genre = ? COLLATE NOCASE
          LIMIT ? OFFSET ?
         """,
-        (genre, limit, offset),
-    ).fetchall()
+            (genre, limit, offset),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -786,8 +867,10 @@ def upsert_track(track: Dict[str, Any]) -> int:
 
 
 def get_track(track_id: int) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        """
+    row = (
+        get_conn()
+        .execute(
+            """
         SELECT t.*,
                ar.name AS artist_name,
                al.name AS album_name,
@@ -797,8 +880,10 @@ def get_track(track_id: int) -> Optional[Dict[str, Any]]:
      LEFT JOIN albums  al ON al.id = t.album_id
          WHERE t.id = ?
         """,
-        (track_id,),
-    ).fetchone()
+            (track_id,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
@@ -808,8 +893,10 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
     The composite index (album_id, disc_number, track_number) makes this an
     index-only scan — no sort, no temp table, even for 100k+ track libraries.
     """
-    rows = get_conn().execute(
-        """
+    rows = (
+        get_conn()
+        .execute(
+            """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
@@ -820,8 +907,10 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
          WHERE t.album_id = ?
       ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE
         """,
-        (album_id,),
-    ).fetchall()
+            (album_id,),
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -834,10 +923,14 @@ def get_existing_paths_for_folder(
     which to remove (path no longer on disk). Crucial for incremental scanning
     on large libraries — we never re-parse a file that hasn't changed.
     """
-    rows = get_conn().execute(
-        "SELECT id, path, mtime, size, album_id FROM tracks WHERE music_folder_id = ?",
-        (folder_id,),
-    ).fetchall()
+    rows = (
+        get_conn()
+        .execute(
+            "SELECT id, path, mtime, size, album_id FROM tracks WHERE music_folder_id = ?",
+            (folder_id,),
+        )
+        .fetchall()
+    )
     return {
         row["path"]: (row["id"], row["mtime"], row["size"], row["album_id"])
         for row in rows
@@ -863,24 +956,20 @@ def cleanup_empty_albums_and_artists() -> Tuple[int, int]:
     Run after a scan that deleted tracks. Returns (albums_deleted, artists_deleted).
     """
     conn = get_conn()
-    cur = conn.execute(
-        """
+    cur = conn.execute("""
         DELETE FROM albums
          WHERE id NOT IN (
              SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL
          )
-        """
-    )
+        """)
     albums_deleted = cur.rowcount
-    cur = conn.execute(
-        """
+    cur = conn.execute("""
         DELETE FROM artists
          WHERE id NOT IN (SELECT DISTINCT artist_id FROM albums)
            AND id NOT IN (
                SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL
            )
-        """
-    )
+        """)
     artists_deleted = cur.rowcount
     return albums_deleted, artists_deleted
 
@@ -965,8 +1054,8 @@ def search3(
 
     return {
         "artists": _rows_to_dicts(artists),
-        "albums":  _rows_to_dicts(albums),
-        "songs":   _rows_to_dicts(songs),
+        "albums": _rows_to_dicts(albums),
+        "songs": _rows_to_dicts(songs),
     }
 
 
@@ -996,8 +1085,7 @@ _USER_ROLE_COLS = (
 # Full user row including password_hash and encrypted_password — auth paths only.
 _USER_SELECT = (
     "id, username, password_hash, encrypted_password, is_admin, disabled, "
-    "created_at, password_changed_at, "
-    + ", ".join(_USER_ROLE_COLS)
+    "created_at, password_changed_at, " + ", ".join(_USER_ROLE_COLS)
 )
 
 # Same but without password_hash — safe to return to the API layer / admin UI.
@@ -1065,26 +1153,38 @@ def create_user(
 
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        f"SELECT {_USER_SELECT} FROM users WHERE username = ?",
-        (username,),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            f"SELECT {_USER_SELECT} FROM users WHERE username = ?",
+            (username,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
-    row = get_conn().execute(
-        f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
+    row = (
+        get_conn()
+        .execute(
+            f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = ?",
+            (user_id,),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def list_users() -> List[Dict[str, Any]]:
     """All users without password_hash, ordered by username."""
-    rows = get_conn().execute(
-        f"SELECT {_USER_SELECT_NO_HASH} FROM users ORDER BY username COLLATE NOCASE"
-    ).fetchall()
+    rows = (
+        get_conn()
+        .execute(
+            f"SELECT {_USER_SELECT_NO_HASH} FROM users ORDER BY username COLLATE NOCASE"
+        )
+        .fetchall()
+    )
     return _rows_to_dicts(rows)
 
 
@@ -1232,7 +1332,7 @@ def library_stats() -> Dict[str, int]:
     ).fetchone()
     return {
         "artists": conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0],
-        "albums":  conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0],
-        "tracks":  conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
+        "albums": conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0],
+        "tracks": conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
         "total_duration_seconds": int(duration_row[0] or 0),
     }
