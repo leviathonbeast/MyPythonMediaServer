@@ -38,9 +38,9 @@ def do_search3(
 @_double_register("search2")
 def do_search2(
     query: str = Query(...),
-    artistCount: int = Query(default=20, ge=0, le=500),
-    albumCount: int = Query(default=20, ge=0, le=500),
-    songCount: int = Query(default=20, ge=0, le=500),
+    artistCount: int = Query(default=20, ge=0, le=1500),
+    albumCount: int = Query(default=20, ge=0, le=1500),
+    songCount: int = Query(default=20, ge=0, le=1500),
     artistOffset: int = Query(default=0, ge=0),
     albumOffset: int = Query(default=0, ge=0),
     songOffset: int = Query(default=0, ge=0),
