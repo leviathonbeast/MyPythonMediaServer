@@ -96,7 +96,14 @@ class Settings(BaseSettings):
         description="HMAC secret for JWT signing. Override in production.",
     )
     jwt_algorithm: str = Field(default="HS256")
-    jwt_expiry_hours: int = Field(default=24 * 30, description="Token lifetime.")
+    jwt_expiry_hours: int = Field(
+        default=24,
+        description=(
+            "Token lifetime in hours. Shorter limits the blast radius of a "
+            "stolen JWT and the window during which a disabled account can "
+            "still use the web UI. Override in config.yaml if needed."
+        ),
+    )
 
     # Off by default — /docs lists every endpoint and is useful to attackers
     # mapping the surface. Flip to true in development if you want Swagger UI.

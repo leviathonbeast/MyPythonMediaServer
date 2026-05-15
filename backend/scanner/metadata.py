@@ -242,6 +242,9 @@ def _try_ffprobe(path: str, meta: TrackMetadata) -> None:
     handles obscure formats (WavPack, MPC, dsf, ...) that mutagen may not.
     """
     settings = get_settings()
+    # Resolve to an absolute path so a filename starting with "-" can never
+    # be parsed as a positional flag by ffprobe.
+    safe_path = str(Path(path).resolve())
     try:
         out = subprocess.run(
             [
@@ -250,7 +253,7 @@ def _try_ffprobe(path: str, meta: TrackMetadata) -> None:
                 "-print_format", "json",
                 "-show_format",
                 "-show_streams",
-                path,
+                safe_path,
             ],
             capture_output=True,
             timeout=10,

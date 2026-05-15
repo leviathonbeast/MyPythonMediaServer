@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from pathlib import Path
 from typing import Iterator, Optional
 
 from backend.config import get_settings
@@ -49,13 +50,17 @@ class TranscodeStream:
 
     def __enter__(self) -> "TranscodeStream":
         settings = get_settings()
+        # Resolve to an absolute path: a filename starting with "-" could
+        # otherwise be misread as a flag by ffmpeg's arg parser. Library paths
+        # are configured absolute already; this just hardens the boundary.
+        safe_path = str(Path(self.source_path).resolve())
         cmd = [
             settings.ffmpeg_binary,
             "-loglevel",
             "error",
             "-nostdin",
             "-i",
-            self.source_path,
+            safe_path,
             *self.preset.ffmpeg_args,
             "pipe:1",
         ]

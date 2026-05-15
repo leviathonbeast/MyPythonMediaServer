@@ -17,6 +17,7 @@ WHY hash-based filenames:
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -57,9 +58,15 @@ def store_artwork(data: bytes) -> Optional[str]:
     return h
 
 
+_ARTWORK_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+
 def find_artwork_path(cover_art_id: str) -> Optional[Path]:
     """Locate a stored artwork file by its hash. Returns the path or None."""
-    if not cover_art_id:
+    # Reject anything that isn't a 16-char hex hash. Without this an attacker
+    # could pass id="../../etc/passwd" and read any file with a .jpg/.png/.webp
+    # extension that resolves outside the artwork cache dir.
+    if not cover_art_id or not _ARTWORK_ID_RE.fullmatch(cover_art_id):
         return None
     cache_dir = Path(get_settings().artwork_cache_dir)
     # Try common extensions in order of likelihood.
