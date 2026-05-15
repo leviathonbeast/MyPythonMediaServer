@@ -916,10 +916,24 @@ def list_song_by_genre(
     offset: Optional[int],
     music_folder_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
+    """Songs filtered by genre, paginated.
+
+    The ORDER BY is required for OFFSET to be stable — without it SQLite is
+    free to return rows in any order, which means page 2 can repeat or skip
+    rows that appeared on page 1. We sort by id (the rowid alias) because it's
+    free: it's the primary key, so the LIMIT+OFFSET walk happens index-only.
+    """
+    where = ["t.genre = ? COLLATE NOCASE"]
+    params: List[Any] = [genre]
+    if music_folder_id is not None:
+        where.append("t.music_folder_id = ?")
+        params.append(music_folder_id)
+    where_sql = "WHERE " + " AND ".join(where)
+
     rows = (
         get_conn()
         .execute(
-            """
+            f"""
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
@@ -927,10 +941,11 @@ def list_song_by_genre(
           FROM tracks t
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE t.genre = ? COLLATE NOCASE
+         {where_sql}
+      ORDER BY t.id
          LIMIT ? OFFSET ?
         """,
-            (genre, limit, offset),
+            (*params, limit, offset),
         )
         .fetchall()
     )
@@ -942,9 +957,12 @@ def upsert_track(track: Dict[str, Any]) -> int:
 
     The scanner builds the dict; we just persist it. Returning the id lets
     the scanner accumulate album_id->track-count maps in memory.
+
+    Performance: RETURNING collapses INSERT-then-SELECT into one round trip.
+    Saves one query per track during scans — on a 100k-track library that's
+    100k fewer SELECTs.
     """
-    conn = get_conn()
-    conn.execute(
+    row = get_conn().execute(
         """
         INSERT INTO tracks (
             album_id, artist_id, music_folder_id, path, title,
@@ -973,11 +991,9 @@ def upsert_track(track: Dict[str, Any]) -> int:
             mtime        = excluded.mtime,
             content_hash = excluded.content_hash,
             last_scanned = excluded.last_scanned
+        RETURNING id
         """,
         track,
-    )
-    row = conn.execute(
-        "SELECT id FROM tracks WHERE path = ?", (track["path"],)
     ).fetchone()
     return int(row["id"])
 
@@ -1444,14 +1460,25 @@ def library_stats() -> Dict[str, int]:
     big library feel real — "12,340 tracks / 41 days of music" reads
     very differently from "12,340 tracks". The duration sum is cheap on
     indexed columns even at 500k rows.
+
+    Performance: one round-trip via a single SELECT with scalar subqueries.
+    Previously took four separate execute() calls — each one a Python ↔
+    SQLite hop. SQLite computes all four aggregates in a single statement
+    plan and each COUNT(*) is satisfied directly from the table's b-tree
+    metadata.
     """
-    conn = get_conn()
-    duration_row = conn.execute(
-        "SELECT COALESCE(SUM(duration), 0) FROM tracks"
+    row = get_conn().execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM artists)                  AS artists,
+            (SELECT COUNT(*) FROM albums)                   AS albums,
+            (SELECT COUNT(*) FROM tracks)                   AS tracks,
+            (SELECT COALESCE(SUM(duration), 0) FROM tracks) AS total_duration_seconds
+        """
     ).fetchone()
     return {
-        "artists": conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0],
-        "albums": conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0],
-        "tracks": conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
-        "total_duration_seconds": int(duration_row[0] or 0),
+        "artists": row["artists"],
+        "albums": row["albums"],
+        "tracks": row["tracks"],
+        "total_duration_seconds": int(row["total_duration_seconds"] or 0),
     }
