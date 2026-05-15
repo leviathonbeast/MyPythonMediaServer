@@ -261,6 +261,15 @@ async def _build_transcoded_response(
 ) -> Response:
     """
     Spawn ffmpeg, stream its stdout. Honour `time_offset` and HTTP Range as seek.
+
+    Why we never set Content-Length on this path
+    -------------------------------------------
+    ffmpeg's output size is approximately `bitrate × duration` but not exactly
+    — frame padding, codec overhead and VBR all push the real number slightly
+    off. If we promise Content-Length: N and only deliver M < N bytes, the
+    browser treats the response as truncated, kills the connection and retries
+    from byte 0. The retry sets up the same mismatch and we end up in a tight
+    request loop. Honest answer: send the body chunked, no length.
     """
     bytes_per_second = preset.bitrate * 1000 // 8  # kbps → bytes/s
     estimated_total: Optional[int] = (
@@ -269,61 +278,62 @@ async def _build_transcoded_response(
 
     rng = _parse_range(request.headers.get("range"), estimated_total)
     rng_start = rng[0] if rng else None
-    rng_end = rng[1] if rng else None
 
-    # Explicit timeOffset wins. Otherwise derive seek from the Range start byte.
-    if time_offset is not None and time_offset > 0:
+    # A "seek" means the client is asking us to start somewhere other than 0.
+    # Browsers send `Range: bytes=0-` on the *initial* play; that's not a seek.
+    explicit_offset = time_offset is not None and time_offset > 0
+    range_seek = rng_start is not None and rng_start > 0
+    is_seek = explicit_offset or range_seek
+
+    if explicit_offset:
         seek_seconds = float(time_offset)
-    elif rng_start:
+    elif range_seek:
         seek_seconds = rng_start / bytes_per_second
     else:
         seek_seconds = 0.0
 
-    ts = TranscodeStream(
-        track_path,
-        preset,
-        chunk_size=chunk_size,
-        start_seconds=seek_seconds,
-    )
-    # Enter the context here so subprocess-spawn errors surface as HTTP errors
-    # rather than mid-stream interruptions. The generator below handles exit.
-    await ts.__aenter__()
-
+    # ffmpeg is spawned *inside* the generator so the subprocess lifetime is
+    # strictly bound to iteration. If the response is never iterated (we cancel
+    # before send, or another middleware short-circuits), no process is spawned
+    # and nothing can leak. Trade-off: a spawn error becomes a mid-stream EOF
+    # instead of an HTTP 500 — acceptable for an audio server.
     async def gen() -> AsyncIterator[bytes]:
-        try:
+        async with TranscodeStream(
+            track_path,
+            preset,
+            chunk_size=chunk_size,
+            start_seconds=seek_seconds,
+        ) as ts:
             async for chunk in ts.iter_chunks():
                 yield chunk
-        finally:
-            await ts.__aexit__(None, None, None)
 
     common = {
         "Content-Type": preset.content_type,
         "Cache-Control": "no-cache",
+        # Advertise range support whenever we know enough to synthesise one.
+        # The browser uses this to decide whether seeking is allowed.
+        "Accept-Ranges": "bytes" if estimated_total else "none",
     }
 
-    # Synthesized 206 when the client asked for a seek and we know the duration.
-    if rng_start is not None and estimated_total is not None:
-        end = rng_end if rng_end is not None else estimated_total - 1
-        length = max(0, end - rng_start + 1)
+    # 206 only for *actual* seeks we can describe. Content-Range tells the
+    # browser the position; the body length is left to chunked transfer.
+    if is_seek and estimated_total is not None:
+        start_byte = int(seek_seconds * bytes_per_second)
+        end_byte = estimated_total - 1
         return StreamingResponse(
             gen(),
             status_code=206,
             media_type=preset.content_type,
             headers={
                 **common,
-                "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes {rng_start}-{end}/{estimated_total}",
-                "Content-Length": str(length),
+                "Content-Range": f"bytes {start_byte}-{end_byte}/{estimated_total}",
             },
         )
 
-    # No seek, or no duration to synthesize ranges from → chunked.
+    # Initial play (Range: bytes=0- or no Range) → 200 chunked, no length.
     return StreamingResponse(
         gen(),
         status_code=200,
         media_type=preset.content_type,
-        headers={
-            **common,
-            "Accept-Ranges": "bytes" if estimated_total else "none",
-        },
+        headers=common,
     )

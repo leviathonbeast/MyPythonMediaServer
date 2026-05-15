@@ -17,13 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-
 # Hard ceiling on transcoded bitrate. Raw streams bypass this — see streamer.py.
 MAX_TRANSCODE_BITRATE = 320
 
 # Standard bitrate rungs we expose. Adding a new value here also makes the UI
 # pick it up via /api/transcoding/policy.
-_BITRATES = (128, 192, 320)
+_BITRATES = (128, 192, 256, 320)
 
 
 @dataclass(frozen=True)

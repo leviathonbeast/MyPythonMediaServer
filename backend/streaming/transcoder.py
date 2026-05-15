@@ -9,7 +9,10 @@ Critical things to get right
 ----------------------------
 1. Don't load the file into memory. We pass a path to ffmpeg, not bytes.
 2. Don't leak processes. If the client disconnects mid-stream we MUST reap
-   ffmpeg, otherwise dropped streams leak fds until the host falls over.
+   ffmpeg, otherwise dropped streams leak fds until the host falls over. The
+   teardown path is cancellation-safe: SIGTERM is sent synchronously and the
+   wait/SIGKILL fallback runs as a fire-and-forget task so a cancelled caller
+   can't strand the process. See `_terminate` and `_reap`.
 3. Don't block on stderr. ffmpeg writes status to stderr; if we don't drain
    it, it eventually fills its pipe and ffmpeg blocks. We drain it concurrently
    into a small ring buffer so non-zero exits show up in the log with context.
@@ -24,7 +27,7 @@ import asyncio
 import collections
 import logging
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Deque, Optional
 
 from backend.config import get_settings
 from .presets import TranscodePreset
@@ -58,9 +61,7 @@ class TranscodeStream:
         self.chunk_size = chunk_size
         self.start_seconds = max(0.0, float(start_seconds))
         self._proc: Optional[asyncio.subprocess.Process] = None
-        self._stderr_tail: "collections.deque[int]" = collections.deque(
-            maxlen=_STDERR_CAP_BYTES
-        )
+        self._stderr_tail: Deque[int] = collections.deque(maxlen=_STDERR_CAP_BYTES)
         self._stderr_task: Optional[asyncio.Task] = None
 
     async def __aenter__(self) -> "TranscodeStream":
@@ -117,51 +118,84 @@ class TranscodeStream:
                     break
                 yield chunk
         finally:
-            await self._terminate()
+            self._terminate()
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        await self._terminate()
+        self._terminate()
 
-    async def _terminate(self) -> None:
+    def _terminate(self) -> None:
         """
-        Reap the subprocess. Idempotent — safe to call repeatedly.
+        Signal ffmpeg synchronously, then hand off the wait/kill to a
+        fire-and-forget reaper.
 
-        Order matters: SIGTERM first (graceful, lets ffmpeg flush), give it a
-        second, then SIGKILL. We swallow ProcessLookupError because the
-        process may have already exited between our poll and signal.
+        Why synchronous: `_terminate` runs from a `finally` block on the
+        cancellation path. Any `await` here can itself raise CancelledError,
+        which would unwind before SIGTERM is sent and strand the process.
+        Sending the signal with `proc.terminate()` is a non-awaiting syscall,
+        so it always lands. The follow-up wait/SIGKILL runs in `_reap`, which
+        is a top-level coroutine immune to our caller's cancellation.
         """
         proc = self._proc
         if proc is None:
             return
         self._proc = None
+        stderr_task = self._stderr_task
+        self._stderr_task = None
+
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+
+        # Hand off the rest. ensure_future schedules on the running loop.
         try:
-            if proc.returncode is None:
+            asyncio.ensure_future(
+                _reap(proc, stderr_task, bytes(self._stderr_tail), self.source_path)
+            )
+        except RuntimeError:
+            # No running loop (extremely unlikely from an async context). Best
+            # effort: kill outright so we at least don't leave a runaway process.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+
+async def _reap(
+    proc: asyncio.subprocess.Process,
+    stderr_task: Optional[asyncio.Task],
+    stderr_tail: bytes,
+    source_path: str,
+) -> None:
+    """Wait for ffmpeg to exit. SIGKILL if it refuses. Log non-zero exits."""
+    try:
+        if proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
                 try:
-                    proc.terminate()
+                    proc.kill()
                 except ProcessLookupError:
                     pass
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    await proc.wait()
+                    log.error("ffmpeg refused to die for %s", source_path)
+                    return
 
-            if self._stderr_task is not None:
-                self._stderr_task.cancel()
-                try:
-                    await self._stderr_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                self._stderr_task = None
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
-            if proc.returncode not in (0, None) and self._stderr_tail:
-                tail = bytes(self._stderr_tail).decode("utf-8", errors="replace")
-                log.warning(
-                    "ffmpeg exited %s for %s — stderr: %s",
-                    proc.returncode, self.source_path, tail.strip(),
-                )
-        except Exception:
-            log.exception("error tearing down ffmpeg subprocess")
+        if proc.returncode not in (0, None) and stderr_tail:
+            tail = stderr_tail.decode("utf-8", errors="replace").strip()
+            log.warning(
+                "ffmpeg exited %s for %s — stderr: %s",
+                proc.returncode, source_path, tail,
+            )
+    except Exception:
+        log.exception("error reaping ffmpeg")
