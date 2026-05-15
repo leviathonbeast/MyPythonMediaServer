@@ -96,8 +96,11 @@ admin_password: "CHANGE_ME"
 # used — tokens survive restarts but are not safe for production.
 jwt_secret: "CHANGE_ME_generate_with_python3_-c_import_secrets_print_secrets.token_hex(32)"
 
-# How long web-UI JWTs stay valid (hours). Default: 720 (30 days).
-jwt_expiry_hours: 720
+# How long web-UI JWTs stay valid (hours). Default: 24.
+# Shorter limits the blast radius of a stolen token and the window during
+# which a disabled account can keep using a still-valid web session.
+# Bump higher (e.g. 168 for a week) if re-login frequency annoys users.
+jwt_expiry_hours: 24
 
 # --- Auth Rate Limit ------------------------------------------------------------------ #
 
@@ -134,6 +137,12 @@ port: 4040
 
 # Display name sent to Subsonic clients (shown in some client UIs).
 server_name: Muse
+
+# Expose FastAPI's auto-generated /docs, /redoc, and /openapi.json publicly.
+# Keep false in production — the docs page is a complete map of every endpoint
+# and parameter, useful to attackers planning where to probe. Flip to true in
+# development if you want Swagger UI handy.
+expose_docs: false
 
 # --- Logging --------------------------------------------------------------- #
 
