@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field(default="HS256")
     jwt_expiry_hours: int = Field(default=24 * 30, description="Token lifetime.")
 
+    # Off by default — /docs lists every endpoint and is useful to attackers
+    # mapping the surface. Flip to true in development if you want Swagger UI.
+    expose_docs: bool = Field(
+        default=False,
+        description="Serve FastAPI's /docs, /redoc, /openapi.json publicly.",
+    )
+
     # Initial admin credentials. These are used to bootstrap the user table on
     # first run. They are NOT re-applied on subsequent runs (so changing them
     # later won't reset the admin password — that's intentional).
