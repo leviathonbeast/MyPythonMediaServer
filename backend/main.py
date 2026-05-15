@@ -87,13 +87,21 @@ async def lifespan(app: FastAPI):
     log.info("Muse shutting down")
 
 
+_boot_settings = get_settings()
+_docs_url = "/docs" if _boot_settings.expose_docs else None
+_redoc_url = "/redoc" if _boot_settings.expose_docs else None
+_openapi_url = "/openapi.json" if _boot_settings.expose_docs else None
+
 app = FastAPI(
     title="Muse — Subsonic-compatible music server",
     version="0.1.0",
     description=(
-        "Subsonic API at /rest/*  •  Web UI API at /api/*  •  " "OpenAPI docs at /docs."
+        "Subsonic API at /rest/*  •  Web UI API at /api/*  •  Web UI at /web/*."
     ),
     lifespan=lifespan,
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
 )
 
 
@@ -122,8 +130,28 @@ app.add_exception_handler(SubsonicAuthError, subsonic_auth_exception_handler)
 
 
 # ---------------------------------------------------------------------------
-# Static frontend — served when the Vite dist is present (i.e. in Docker /
-# any production build). In dev, the Vite dev-server handles this instead.
+# Root info doc — always served. The SPA lives at /web (below) so this gives
+# monitoring tools and humans-with-curl a small, harmless landing page at /.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return JSONResponse(
+        {
+            "name": "Muse",
+            "version": "0.1.0",
+            "rest": "/rest/ping",
+            "web": "/web/",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Static frontend at /web — served when the Vite dist is present (i.e. in
+# Docker / any production build). In dev, the Vite dev-server handles this
+# instead. Vite must be built with `base: "/web/"` so emitted asset paths
+# match the mount points below.
 # ---------------------------------------------------------------------------
 _dist = Path(__file__).parent.parent / "frontend" / "dist"
 if _dist.is_dir():
@@ -131,10 +159,15 @@ if _dist.is_dir():
     # StaticFiles. The mount must be registered before the catch-all below.
     _assets = _dist / "assets"
     if _assets.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(_assets)), name="static-assets")
+        app.mount(
+            "/web/assets",
+            StaticFiles(directory=str(_assets)),
+            name="static-assets",
+        )
 
-    @app.get("/", include_in_schema=False)
-    def root():
+    @app.get("/web", include_in_schema=False)
+    @app.get("/web/", include_in_schema=False)
+    def web_root():
         return FileResponse(str(_dist / "index.html"))
 
     @app.get("/rest/{method:path}", include_in_schema=False)
@@ -149,28 +182,13 @@ if _dist.is_dir():
             callback=ctx.callback,
         )
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @app.get("/web/{path:path}", include_in_schema=False)
     async def spa_fallback(path: str):
         """Serve matching files from dist, fall back to index.html for SPA routing."""
         candidate = _dist / path
         if candidate.is_file():
             return FileResponse(str(candidate))
         return FileResponse(str(_dist / "index.html"))
-
-else:
-
-    @app.get("/", include_in_schema=False)
-    def root():
-        """Dev-mode info endpoint — replaced by the SPA in production."""
-        return JSONResponse(
-            {
-                "name": "Muse",
-                "version": "0.1.0",
-                "docs": "/docs",
-                "rest": "/rest/ping",
-                "web": "Open the frontend dev server at http://localhost:5173",
-            }
-        )
 
 
 # `python -m backend.main` convenience wrapper.

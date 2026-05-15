@@ -17,6 +17,10 @@ const BACKEND  = process.env.MUSE_BACKEND_URL  ?? "http://127.0.0.1:4040";
 const DEV_HOST = process.env.MUSE_FRONTEND_HOST ?? "0.0.0.0";
 
 export default defineConfig({
+  // Production assets are served by the FastAPI backend at /web/*. Vite
+  // bakes this prefix into emitted index.html (`<script src="/web/assets/...">`)
+  // and into any dynamic imports. Must match the mount paths in backend/main.py.
+  base: "/web/",
   server: {
     host: DEV_HOST,
     port: 5173,
