@@ -1381,7 +1381,7 @@ def create_user(
     share_role: bool = False,
     video_conversion_role: bool = False,
 ) -> int:
-    """Insert a new user. Raises sqlite3.IntegrityError if username is taken."""
+    """Insert a new user. Raises IntegrityError if username is taken."""
     now = int(time.time())
     cur = get_conn().execute(
         """
@@ -1391,29 +1391,35 @@ def create_user(
             settings_role, stream_role, download_role, upload_role,
             playlist_role, cover_art_role, comment_role, podcast_role,
             jukebox_role, share_role, video_conversion_role
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            :username, :password_hash, :is_admin, :created_at, :password_changed_at,
+            :email, :scrobbling_enabled, :max_bit_rate,
+            :settings_role, :stream_role, :download_role, :upload_role,
+            :playlist_role, :cover_art_role, :comment_role, :podcast_role,
+            :jukebox_role, :share_role, :video_conversion_role
+        )
         """,
-        (
-            username,
-            password_hash,
-            int(is_admin),
-            now,
-            now,
-            email,
-            int(scrobbling_enabled),
-            max_bit_rate,
-            int(settings_role),
-            int(stream_role),
-            int(download_role),
-            int(upload_role),
-            int(playlist_role),
-            int(cover_art_role),
-            int(comment_role),
-            int(podcast_role),
-            int(jukebox_role),
-            int(share_role),
-            int(video_conversion_role),
-        ),
+        {
+            "username": username,
+            "password_hash": password_hash,
+            "is_admin": int(is_admin),
+            "created_at": now,
+            "password_changed_at": now,
+            "email": email,
+            "scrobbling_enabled": int(scrobbling_enabled),
+            "max_bit_rate": max_bit_rate,
+            "settings_role": int(settings_role),
+            "stream_role": int(stream_role),
+            "download_role": int(download_role),
+            "upload_role": int(upload_role),
+            "playlist_role": int(playlist_role),
+            "cover_art_role": int(cover_art_role),
+            "comment_role": int(comment_role),
+            "podcast_role": int(podcast_role),
+            "jukebox_role": int(jukebox_role),
+            "share_role": int(share_role),
+            "video_conversion_role": int(video_conversion_role),
+        },
     )
     return cur.lastrowid
 
@@ -1422,8 +1428,8 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            f"SELECT {_USER_SELECT} FROM users WHERE username = ?",
-            (username,),
+            f"SELECT {_USER_SELECT} FROM users WHERE username = :username",
+            {"username": username},
         )
         .fetchone()
     )
@@ -1434,8 +1440,8 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = ?",
-            (user_id,),
+            f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = :id",
+            {"id": user_id},
         )
         .fetchone()
     )
@@ -1483,15 +1489,15 @@ def update_user(
     # update_user("alice", download_role=True) to flip one role without touching
     # anything else, without needing 16 separate update functions.
     fields: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"username": username}
 
     def _add(col: str, val: Any, cast=None) -> None:
-        """Append 'col = ?' to fields and the value to params, if val is not None."""
+        """Append 'col = :col' to fields and the value to params, if val is not None."""
         if val is None:
             return
-        fields.append(f"{col} = ?")
+        fields.append(f"{col} = :{col}")
         # cast converts Python bool to int (SQLite stores booleans as 0/1).
-        params.append(cast(val) if cast else val)
+        params[col] = cast(val) if cast else val
 
     _add("password_hash", password_hash)
     # Stamp the rotation timestamp whenever the hash changes.
@@ -1516,9 +1522,8 @@ def update_user(
     if not fields:
         return bool(get_user_by_username(username))
 
-    params.append(username)
     cur = get_conn().execute(
-        f"UPDATE users SET {', '.join(fields)} WHERE username = ?",
+        f"UPDATE users SET {', '.join(fields)} WHERE username = :username",
         params,
     )
     return cur.rowcount > 0
@@ -1528,8 +1533,17 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
     """Replace the stored password hash by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
-        (password_hash, int(time.time()), user_id),
+        """
+        UPDATE users
+           SET password_hash = :password_hash,
+               password_changed_at = :password_changed_at
+         WHERE id = :id
+        """,
+        {
+            "password_hash": password_hash,
+            "password_changed_at": int(time.time()),
+            "id": user_id,
+        },
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1539,8 +1553,8 @@ def update_encrypted_password(user_id: int, value: Optional[str]) -> None:
     """Store or clear the Fernet-encrypted plaintext password used for Subsonic token+salt auth."""
     conn = get_conn()
     conn.execute(
-        "UPDATE users SET encrypted_password = ? WHERE id = ?",
-        (value, user_id),
+        "UPDATE users SET encrypted_password = :value WHERE id = :id",
+        {"value": value, "id": user_id},
     )
     conn.commit()
 
@@ -1549,8 +1563,8 @@ def set_user_disabled(user_id: int, disabled: bool) -> bool:
     """Set or clear the disabled flag by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET disabled = ? WHERE id = ?",
-        (int(disabled), user_id),
+        "UPDATE users SET disabled = :disabled WHERE id = :id",
+        {"disabled": int(disabled), "id": user_id},
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1560,8 +1574,8 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
     """Set or clear the admin flag by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET is_admin = ? WHERE id = ?",
-        (int(is_admin), user_id),
+        "UPDATE users SET is_admin = :is_admin WHERE id = :id",
+        {"is_admin": int(is_admin), "id": user_id},
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1569,13 +1583,19 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
 
 def delete_user(user_id: int) -> bool:
     """Remove a user by id. Returns True if a row was deleted."""
-    cur = get_conn().execute("DELETE FROM users WHERE id = ?", (user_id,))
+    cur = get_conn().execute(
+        "DELETE FROM users WHERE id = :id",
+        {"id": user_id},
+    )
     return cur.rowcount > 0
 
 
 def delete_user_by_username(username: str) -> bool:
     """Remove a user by username. Returns True if a row was deleted."""
-    cur = get_conn().execute("DELETE FROM users WHERE username = ?", (username,))
+    cur = get_conn().execute(
+        "DELETE FROM users WHERE username = :username",
+        {"username": username},
+    )
     return cur.rowcount > 0
 
 
