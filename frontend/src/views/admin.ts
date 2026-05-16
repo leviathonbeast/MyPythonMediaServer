@@ -59,8 +59,8 @@ async function refreshUsers(host: HTMLElement): Promise<void> {
   el.classList.remove("loading");
 
   el.innerHTML = `
-    <div class="panel">
-      <table style="width:100%;border-collapse:collapse">
+    <div class="panel" style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;border-collapse:collapse;min-width:36rem">
         <thead>
           <tr>
             <th class="label" style="text-align:left;padding-bottom:.5rem;border-bottom:1px solid var(--rule)">— Username</th>
@@ -82,7 +82,7 @@ async function refreshUsers(host: HTMLElement): Promise<void> {
       <span class="rule"></span>
     </div>
     <div class="panel">
-      <form data-addform style="display:grid;grid-template-columns:1fr 1fr auto auto;gap:.75rem;align-items:end">
+      <form data-addform style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;align-items:end">
         <div>
           <label class="label" style="display:block;margin-bottom:.4rem">— Username</label>
           <input name="username" required placeholder="alice" style="${INPUT_STYLE};width:100%" />

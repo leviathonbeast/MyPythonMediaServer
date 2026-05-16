@@ -235,7 +235,9 @@ a:hover { color: var(--accent); }
 .main {
   grid-row: 1 / 2;
   padding: var(--gap-8) var(--gap-12) calc(var(--player-h) + var(--gap-8));
-  max-width: 1400px;
+  /* No max-width: prose-heavy sections (bio, lyrics) cap themselves with
+     their own ch-based limits, so tables/grids are free to use the full
+     viewport. The 900px mobile breakpoint further reduces .main padding. */
 }
 
 /* Page header — masthead style */
@@ -840,6 +842,49 @@ a:hover { color: var(--accent); }
   padding-bottom: var(--gap-6);
   border-bottom: 1px solid var(--rule);
 }
+
+/* Artist hero — split-column layout when a photo is available. The image
+   spans the full left column; the title/meta info column sits to the right
+   with its own bottom-border (mirrors the .page-head divider). Collapses
+   to a stacked layout below 720px via the media-query block at the bottom
+   of this file. */
+.artist-hero {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--gap-8);
+  align-items: stretch;
+  margin-bottom: var(--gap-8);
+}
+.artist-hero .art {
+  aspect-ratio: 1;
+  background: var(--bg-2) center/cover no-repeat;
+  border: 1px solid var(--rule);
+}
+.artist-hero .info {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: var(--gap-4);
+}
+.artist-hero .info h1 {
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 144, "SOFT" 50, "WONK" 1;
+  font-weight: 400;
+  font-size: var(--t-mast);
+  letter-spacing: -0.035em;
+  line-height: 0.95;
+  margin: 0.5rem 0 0;
+}
+.artist-hero .info .meta {
+  margin-top: 0.75rem;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--muted);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
 .album-head .art {
   aspect-ratio: 1;
   background: var(--bg-2);
@@ -1226,6 +1271,8 @@ a:hover { color: var(--accent); }
 }
 
 /* ─── 6. View tweaks (responsive) ────────────────────────────── */
+/* Tablet: sidebar collapses on top, hero layouts go single-column,
+   player stacks into a vertical bar. */
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   .sidebar {
@@ -1236,10 +1283,50 @@ a:hover { color: var(--accent); }
   }
   .main { padding: var(--gap-6); }
   .album-head { grid-template-columns: 1fr; }
-  .player { grid-template-columns: 1fr; height: auto; padding: var(--gap-3); }
-  .player .vol { display: none; }
+  .artist-hero { grid-template-columns: 1fr; gap: var(--gap-6); }
+  .artist-hero .art { max-width: 320px; }
+
+  /* Player: two-row stack — controls + scrub on top, now-playing meta
+     below. We use grid-areas instead of column counts because the
+     three children are independently sized and we want the scrub to
+     get the full row width. */
+  .player {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "controls"
+      "now";
+    height: auto;
+    padding: var(--gap-3);
+    gap: var(--gap-2);
+  }
+  .player .now      { grid-area: now; }
+  .player .controls { grid-area: controls; }
+  .player .vol      { display: none; }
+
   .login { grid-template-columns: 1fr; }
   .login .marquee { display: none; }
+}
+
+/* Phone: tighter gaps, smaller cover art on heroes, denser table rows.
+   The split breakpoint (720/480) lets large tablets keep the album-card
+   sizing while phones get the compact treatment. */
+@media (max-width: 720px) {
+  .page-head { grid-template-columns: 1fr; gap: var(--gap-3); }
+  .page-head .meta { text-align: left; }
+  .artist-hero .art { max-width: 240px; margin: 0 auto; }
+  .artist-hero .info { align-items: flex-start; text-align: left; }
+  .album-head .art { max-width: 280px; margin: 0 auto; }
+  /* Tighter padding so 4-column tracklists don't crowd. */
+  .tracklist th, .tracklist td { padding: var(--gap-2); }
+  .tracklist .num { width: 2.5rem; }
+  .tracklist .duration { width: 3.5rem; }
+}
+
+@media (max-width: 480px) {
+  .main { padding: var(--gap-4); }
+  .album-grid { gap: var(--gap-4); }
+  /* Section heads and bio chips already wrap; just tighten the gap. */
+  .section-head { margin: var(--gap-6) 0 var(--gap-3); }
 }
 
 /* ─── 7. Motion ──────────────────────────────────────────────── */

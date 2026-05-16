@@ -134,14 +134,16 @@ function wireAppearanceClicks(host: HTMLElement, songs: SubsonicSong[]): void {
 function heroHtml(name: string, imageUrl: string | null, albumCount: number): string {
   // Two layouts: with image (split column) and without (typography hero).
   // The image-based version uses the Last.fm artist photo as a backdrop.
+  // Layout/responsive behavior lives in style.css (.artist-hero) so the
+  // mobile collapse and font sizes can media-query cleanly.
   if (imageUrl) {
     return `
-      <header class="page-head stagger" style="grid-template-columns:280px 1fr 1fr;align-items:stretch;border-bottom:none;padding-bottom:0;margin-bottom:var(--gap-8);gap:var(--gap-8)">
-        <div style="aspect-ratio:1;background:var(--bg-2) center/cover no-repeat url('${escapeHtml(imageUrl)}');border:1px solid var(--rule);grid-row:span 2"></div>
-        <div style="grid-column:span 2;border-bottom:2px solid var(--ink);padding-bottom:var(--gap-4);display:flex;flex-direction:column;justify-content:flex-end">
+      <header class="artist-hero stagger">
+        <div class="art" style="background-image:url('${escapeHtml(imageUrl)}')"></div>
+        <div class="info">
           <span class="label">— Artist</span>
-          <h1 style="font-family:var(--font-display);font-variation-settings:'opsz' 144,'SOFT' 50,'WONK' 1;font-weight:400;font-size:var(--t-mast);letter-spacing:-0.035em;line-height:0.95;margin:.5rem 0 0">${escapeHtml(name)}</h1>
-          <div class="meta" style="margin-top:.75rem">${albumCount} release${albumCount === 1 ? "" : "s"}</div>
+          <h1>${escapeHtml(name)}</h1>
+          <div class="meta">${albumCount} release${albumCount === 1 ? "" : "s"}</div>
         </div>
       </header>
     `;
