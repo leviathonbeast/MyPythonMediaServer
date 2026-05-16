@@ -290,10 +290,10 @@ def list_playlists(user_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
      LEFT JOIN tracks t           ON t.id = pt.track_id
      LEFT JOIN users u            ON u.id = p.owner_id
-         WHERE p.owner_id = ? OR p.is_public = 1
+         WHERE p.owner_id = :user_id OR p.is_public = 1
       GROUP BY p.id
         """,
-            (user_id,),
+            {"user_id": user_id},
         )
         .fetchall()
     )
@@ -308,9 +308,9 @@ def get_playlist(playlist_id: int) -> Optional[Dict[str, Any]]:
         SELECT p.*, u.username AS owner
           FROM playlists p
      LEFT JOIN users u ON u.id = p.owner_id
-         WHERE p.id = ?
+         WHERE p.id = :playlist_id
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchone()
 
     if header is None:
@@ -330,10 +330,10 @@ def get_playlist(playlist_id: int) -> Optional[Dict[str, Any]]:
      LEFT JOIN tracks  t  ON t.id  = pt.track_id
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE pt.playlist_id = ?
+         WHERE pt.playlist_id = :playlist_id
       ORDER BY pt.position
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchall()
 
     result = _row_to_dict(header)
@@ -350,16 +350,22 @@ def create_playlist(name: str, owner_id: int, track_ids: List[int]) -> int:
     cur = conn.execute(
         """
         INSERT INTO playlists (owner_id, name, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (:owner_id, :name, :created_at, :updated_at)
         """,
-        (owner_id, name, now, now),
+        {"owner_id": owner_id, "name": name, "created_at": now, "updated_at": now},
     )
     playlist_id = cur.lastrowid
 
     if track_ids:
         conn.executemany(
-            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-            [(playlist_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO playlist_tracks (playlist_id, position, track_id)
+            VALUES (:playlist_id, :position, :track_id)
+            """,
+            [
+                {"playlist_id": playlist_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
 
     return playlist_id
@@ -373,25 +379,26 @@ def update_playlist(
 ) -> bool:
     """Update any subset of (name, comment, public). Returns True if a row matched."""
     # Build SET clause dynamically — only include fields the caller supplied.
+    # Each SET clause references a named placeholder; the params dict carries
+    # exactly those keys plus :playlist_id for the WHERE.
     fields: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"playlist_id": playlist_id}
 
     if name is not None:
-        fields.append("name = ?")
-        params.append(name)
+        fields.append("name = :name")
+        params["name"] = name
     if comment is not None:
-        fields.append("comment = ?")
-        params.append(comment)
+        fields.append("comment = :comment")
+        params["comment"] = comment
     if public is not None:
-        fields.append("is_public = ?")
-        params.append(int(public))  # SQLite stores booleans as 0/1
+        fields.append("is_public = :is_public")
+        params["is_public"] = int(public)  # SQLite stores booleans as 0/1
 
     if not fields:
         return True  # nothing to update — avoid invalid SQL
 
-    params.append(playlist_id)
     cur = get_conn().execute(
-        f"UPDATE playlists SET {', '.join(fields)} WHERE id = ?",
+        f"UPDATE playlists SET {', '.join(fields)} WHERE id = :playlist_id",
         params,
     )
     return cur.rowcount > 0
@@ -400,8 +407,8 @@ def update_playlist(
 def delete_playlist(playlist_id: int, owner_id: int) -> bool:
     """Delete only if caller owns it."""
     cur = get_conn().execute(
-        "DELETE FROM playlists WHERE id = ? AND owner_id = ?",
-        (playlist_id, owner_id),
+        "DELETE FROM playlists WHERE id = :playlist_id AND owner_id = :owner_id",
+        {"playlist_id": playlist_id, "owner_id": owner_id},
     )
     return cur.rowcount > 0
 
@@ -409,53 +416,78 @@ def delete_playlist(playlist_id: int, owner_id: int) -> bool:
 def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> None:
     conn = get_conn()
     row = conn.execute(
-        "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?",
-        (playlist_id,),
+        """
+        SELECT COALESCE(MAX(position), -1) FROM playlist_tracks
+         WHERE playlist_id = :playlist_id
+        """,
+        {"playlist_id": playlist_id},
     ).fetchone()
     next_pos = row[0] + 1
 
     conn.executemany(
-        "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-        [(playlist_id, next_pos + i, tid) for i, tid in enumerate(track_ids)],
+        """
+        INSERT INTO playlist_tracks (playlist_id, position, track_id)
+        VALUES (:playlist_id, :position, :track_id)
+        """,
+        [
+            {"playlist_id": playlist_id, "position": next_pos + i, "track_id": tid}
+            for i, tid in enumerate(track_ids)
+        ],
     )
 
 
 def replace_playlist_tracks(playlist_id: int, track_ids: List[int]) -> None:
     """Replace the entire track list of a playlist (used by createPlaylist update mode)."""
     conn = get_conn()
-    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+    conn.execute(
+        "DELETE FROM playlist_tracks WHERE playlist_id = :playlist_id",
+        {"playlist_id": playlist_id},
+    )
     if track_ids:
         conn.executemany(
-            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-            [(playlist_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO playlist_tracks (playlist_id, position, track_id)
+            VALUES (:playlist_id, :position, :track_id)
+            """,
+            [
+                {"playlist_id": playlist_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
     now = int(time.time())
     conn.execute(
-        "UPDATE playlists SET updated_at = ? WHERE id = ?", (now, playlist_id)
+        "UPDATE playlists SET updated_at = :updated_at WHERE id = :playlist_id",
+        {"updated_at": now, "playlist_id": playlist_id},
     )
 
 
 def remove_tracks_from_playlist(playlist_id: int, positions: List[int]) -> None:
     conn = get_conn()
     conn.executemany(
-        "DELETE FROM playlist_tracks WHERE playlist_id = ? AND position = ?",
-        [(playlist_id, pos) for pos in positions],
+        """
+        DELETE FROM playlist_tracks
+         WHERE playlist_id = :playlist_id AND position = :position
+        """,
+        [{"playlist_id": playlist_id, "position": pos} for pos in positions],
     )
 
     # Renumber positions so the remaining tracks stay 0..N-1 contiguous.
     remaining = conn.execute(
         """
         SELECT track_id FROM playlist_tracks
-         WHERE playlist_id = ?
+         WHERE playlist_id = :playlist_id
       ORDER BY position ASC
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchall()
 
     conn.executemany(
-        "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
+        """
+        UPDATE playlist_tracks SET position = :position
+         WHERE playlist_id = :playlist_id AND track_id = :track_id
+        """,
         [
-            (new_pos, playlist_id, track_id)
+            {"position": new_pos, "playlist_id": playlist_id, "track_id": track_id}
             for new_pos, (track_id,) in enumerate(remaining)
         ],
     )
