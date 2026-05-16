@@ -602,11 +602,11 @@ def upsert_artist(name: str, sort_name: Optional[str] = None) -> int:
     row = get_conn().execute(
         """
         INSERT INTO artists (name, name_lower, sort_name)
-        VALUES (?, ?, ?)
+        VALUES (:name, :name_lower, :sort_name)
         ON CONFLICT(name_lower) DO UPDATE SET name_lower = artists.name_lower
         RETURNING id
         """,
-        (name, name_lower, sort_name),
+        {"name": name, "name_lower": name_lower, "sort_name": sort_name},
     ).fetchone()
     return int(row["id"])
 
@@ -669,8 +669,8 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, album_count FROM artists WHERE id = ?",
-            (artist_id,),
+            "SELECT id, name, album_count FROM artists WHERE id = :id",
+            {"id": artist_id},
         )
         .fetchone()
     )
@@ -701,11 +701,11 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
     points elsewhere (often the Various-Artists sentinel). Without this
     query those contributions are invisible.
 
-    Filter logic: `tracks.artist_id = ?` keeps only the artist's tracks;
-    `albums.artist_id != ?` drops everything already surfaced via the
-    albums-grouped section. The ordering puts newest first (matches the
-    artist-page album sections) and groups tracks by album so multi-track
-    appearances on the same comp render adjacent.
+    Filter logic: `tracks.artist_id = :artist_id` keeps only the artist's
+    tracks; `albums.artist_id != :artist_id` drops everything already
+    surfaced via the albums-grouped section. The ordering puts newest
+    first (matches the artist-page album sections) and groups tracks by
+    album so multi-track appearances on the same comp render adjacent.
 
     Returns rows in the shape `track_to_subsonic` expects, plus a couple
     of extra fields the frontend can use for context ("appears on …").
@@ -725,14 +725,14 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
           JOIN albums  al ON al.id = t.album_id
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN artists aa ON aa.id = al.artist_id
-         WHERE t.artist_id = ?
-           AND al.artist_id != ?
+         WHERE t.artist_id = :artist_id
+           AND al.artist_id != :artist_id
       ORDER BY COALESCE(al.year, 0) DESC,
                al.name COLLATE NOCASE,
                t.disc_number,
                t.track_number
             """,
-            (artist_id, artist_id),
+            {"artist_id": artist_id},
         )
         .fetchall()
     )
@@ -748,10 +748,10 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
         SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
                cover_art_id, created_at
           FROM albums
-         WHERE artist_id = ?
+         WHERE artist_id = :artist_id
       ORDER BY year, name COLLATE NOCASE
         """,
-            (artist_id,),
+            {"artist_id": artist_id},
         )
         .fetchall()
     )
