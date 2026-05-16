@@ -506,25 +506,25 @@ def get_play_queue(user_id: int) -> Optional[Dict[str, Any]]:
         SELECT p.*, u.username AS owner
           FROM play_queues p
      LEFT JOIN users u ON u.id = p.user_id
-         WHERE p.user_id = ?
+         WHERE p.user_id = :user_id
         """,
-        (user_id,),
+        {"user_id": user_id},
     ).fetchone()
 
     tracks = conn.execute(
         """
         SELECT t.*,
-       ar.name AS artist_name,
-       al.name AS album_name,
-       al.cover_art_id AS cover_art_id
-  FROM play_queue_entries e
-LEFT JOIN tracks  t ON e.track_id = t.id
-LEFT JOIN artists ar ON ar.id = t.artist_id
-LEFT JOIN albums  al ON al.id = t.album_id
-WHERE e.user_id = ?
-ORDER BY e.position
-    """,
-        (user_id,),
+               ar.name AS artist_name,
+               al.name AS album_name,
+               al.cover_art_id AS cover_art_id
+          FROM play_queue_entries e
+     LEFT JOIN tracks  t  ON e.track_id = t.id
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN albums  al ON al.id = t.album_id
+         WHERE e.user_id = :user_id
+      ORDER BY e.position
+        """,
+        {"user_id": user_id},
     ).fetchall()
 
     if header is None:
@@ -550,19 +550,34 @@ def save_play_queue(
     conn = get_conn()
     # Wipe the old ordered list. The header row in play_queues is overwritten
     # below via INSERT OR REPLACE, so we don't need to delete it explicitly.
-    conn.execute("DELETE FROM play_queue_entries WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "DELETE FROM play_queue_entries WHERE user_id = :user_id",
+        {"user_id": user_id},
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO play_queues
             (user_id, current_id, position_ms, changed_at, changed_by)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (:user_id, :current_id, :position_ms, :changed_at, :changed_by)
         """,
-        (user_id, current_track_id, position_ms, int(time.time()), client),
+        {
+            "user_id": user_id,
+            "current_id": current_track_id,
+            "position_ms": position_ms,
+            "changed_at": int(time.time()),
+            "changed_by": client,
+        },
     )
     if track_ids:
         conn.executemany(
-            "INSERT INTO play_queue_entries (user_id, position, track_id) VALUES (?, ?, ?)",
-            [(user_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO play_queue_entries (user_id, position, track_id)
+            VALUES (:user_id, :position, :track_id)
+            """,
+            [
+                {"user_id": user_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
 
 
