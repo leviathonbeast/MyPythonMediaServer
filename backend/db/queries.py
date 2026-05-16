@@ -995,20 +995,20 @@ def list_random_songs(
     filters from the Subsonic spec.
     """
     where: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"size": size}
 
     if genre is not None:
-        where.append("t.genre = ? COLLATE NOCASE")
-        params.append(genre)
+        where.append("t.genre = :genre COLLATE NOCASE")
+        params["genre"] = genre
     if from_year is not None:
-        where.append("t.year >= ?")
-        params.append(from_year)
+        where.append("t.year >= :from_year")
+        params["from_year"] = from_year
     if to_year is not None:
-        where.append("t.year <= ?")
-        params.append(to_year)
+        where.append("t.year <= :to_year")
+        params["to_year"] = to_year
     if music_folder_id is not None:
-        where.append("t.music_folder_id = ?")
-        params.append(music_folder_id)
+        where.append("t.music_folder_id = :music_folder_id")
+        params["music_folder_id"] = music_folder_id
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     rows = (
@@ -1024,9 +1024,9 @@ def list_random_songs(
      LEFT JOIN albums  al ON al.id = t.album_id
          {where_sql}
       ORDER BY RANDOM()
-         LIMIT ?
+         LIMIT :size
         """,
-            (*params, size),
+            params,
         )
         .fetchall()
     )
@@ -1046,11 +1046,11 @@ def list_song_by_genre(
     rows that appeared on page 1. We sort by id (the rowid alias) because it's
     free: it's the primary key, so the LIMIT+OFFSET walk happens index-only.
     """
-    where = ["t.genre = ? COLLATE NOCASE"]
-    params: List[Any] = [genre]
+    where = ["t.genre = :genre COLLATE NOCASE"]
+    params: Dict[str, Any] = {"genre": genre, "limit": limit, "offset": offset}
     if music_folder_id is not None:
-        where.append("t.music_folder_id = ?")
-        params.append(music_folder_id)
+        where.append("t.music_folder_id = :music_folder_id")
+        params["music_folder_id"] = music_folder_id
     where_sql = "WHERE " + " AND ".join(where)
 
     rows = (
@@ -1066,9 +1066,9 @@ def list_song_by_genre(
      LEFT JOIN albums  al ON al.id = t.album_id
          {where_sql}
       ORDER BY t.id
-         LIMIT ? OFFSET ?
+         LIMIT :limit OFFSET :offset
         """,
-            (*params, limit, offset),
+            params,
         )
         .fetchall()
     )
@@ -1133,9 +1133,9 @@ def get_track(track_id: int) -> Optional[Dict[str, Any]]:
           FROM tracks t
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE t.id = ?
+         WHERE t.id = :id
         """,
-            (track_id,),
+            {"id": track_id},
         )
         .fetchone()
     )
@@ -1159,10 +1159,10 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
           FROM tracks t
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE t.album_id = ?
+         WHERE t.album_id = :album_id
       ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE
         """,
-            (album_id,),
+            {"album_id": album_id},
         )
         .fetchall()
     )
@@ -1181,8 +1181,11 @@ def get_existing_paths_for_folder(
     rows = (
         get_conn()
         .execute(
-            "SELECT id, path, mtime, size, album_id FROM tracks WHERE music_folder_id = ?",
-            (folder_id,),
+            """
+            SELECT id, path, mtime, size, album_id FROM tracks
+             WHERE music_folder_id = :folder_id
+            """,
+            {"folder_id": folder_id},
         )
         .fetchall()
     )
@@ -1199,10 +1202,15 @@ def delete_tracks(track_ids: List[int]) -> None:
     conn = get_conn()
     # SQLite has a limit on the number of host params; chunk if needed. 500 is
     # safely under SQLITE_MAX_VARIABLE_NUMBER (default 999 / 32766 newer).
+    # Named placeholders can't be repeated bare for a variable-length IN
+    # list, so we generate :id0, :id1, ... per chunk and zip them into a
+    # dict. Slightly wordier than the f"?,?,?" trick but ports cleanly.
     for i in range(0, len(track_ids), 500):
         chunk = track_ids[i : i + 500]
-        placeholders = ",".join("?" * len(chunk))
-        conn.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", chunk)
+        names = [f"id{j}" for j in range(len(chunk))]
+        placeholders = ",".join(f":{n}" for n in names)
+        params = dict(zip(names, chunk))
+        conn.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", params)
 
 
 def cleanup_empty_albums_and_artists() -> Tuple[int, int]:
