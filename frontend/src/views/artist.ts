@@ -84,35 +84,34 @@ function appearancesHtml(songs: SubsonicSong[]): string {
       <span class="rule"></span>
       <span class="count">${songs.length}</span>
     </div>
-    <div class="track-table" data-appearances>
-      <table>
-        <thead>
-          <tr>
-            <th class="num">#</th>
-            <th>Title</th>
-            <th>Album</th>
-            <th>Year</th>
-            <th class="duration">Time</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${songs.map((s, i) => appearanceRowHtml(s, i)).join("")}
-        </tbody>
-      </table>
-    </div>
+    <table class="tracklist stagger" data-appearances>
+      <thead>
+        <tr>
+          <th class="num">#</th>
+          <th>Title</th>
+          <th>Album</th>
+          <th class="duration">Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${songs.map((s, i) => appearanceRowHtml(s, i)).join("")}
+      </tbody>
+    </table>
   `;
 }
 
 function appearanceRowHtml(s: SubsonicSong, idx: number): string {
-  const albumCell = s.albumId
-    ? `<a href="#/album/${encodeURIComponent(s.albumId)}">${escapeHtml(s.album ?? "")}</a>`
+  const albumLabel = s.year
+    ? `${escapeHtml(s.album ?? "")} (${s.year})`
     : escapeHtml(s.album ?? "");
+  const albumCell = s.albumId
+    ? `<a href="#/album/${encodeURIComponent(s.albumId)}">${albumLabel}</a>`
+    : albumLabel;
   return `
-    <tr data-idx="${idx}" style="cursor:pointer">
+    <tr data-idx="${idx}" data-tid="${escapeHtml(String(s.id))}" style="cursor:pointer">
       <td class="num">${idx + 1}</td>
-      <td class="title">${escapeHtml(s.title)}</td>
+      <td class="title"><a href="#/track/${encodeURIComponent(s.id)}">${escapeHtml(s.title)}</a></td>
       <td>${albumCell}</td>
-      <td>${s.year ?? ""}</td>
       <td class="duration">${fmtDuration(s.duration)}</td>
     </tr>
   `;
@@ -123,7 +122,7 @@ function wireAppearanceClicks(host: HTMLElement, songs: SubsonicSong[]): void {
   if (!tbody) return;
   tbody.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    // Let nested links (album navigation) work normally.
+    // Let nested links (track / album navigation) work normally.
     if (target.closest("a")) return;
     const tr = target.closest("tr");
     if (!tr) return;
