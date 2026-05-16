@@ -44,7 +44,7 @@ from backend.api import (
 )
 from backend.config import ensure_directories, get_settings
 from backend.db import init_db, run_migrations
-from backend.scanner import start_scan_async
+from backend.scanner import start_scan_async, start_watcher, stop_watcher
 
 # We configure logging eagerly at module import (before lifespan runs)
 # because import-time log lines from submodules (e.g. database init when
@@ -83,8 +83,12 @@ async def lifespan(app: FastAPI):
         log.info("Triggering startup scan")
         start_scan_async()
 
+    if settings.scanner_watch_enabled:
+        start_watcher()
+
     yield
     log.info("Muse shutting down")
+    stop_watcher()
 
 
 _boot_settings = get_settings()

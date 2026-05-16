@@ -148,15 +148,6 @@ class TestUpsertTrack:
         ).fetchone()
         assert row["id"] == seeded_library["track_id"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "fts5_track_update trigger DELETEs from contentless virt_fts5, "
-            "which SQLite forbids. Affects every re-scan of an existing track. "
-            "Fix in migrations.py: switch the trigger to "
-            "INSERT INTO virt_fts5(virt_fts5, rowid, ...) VALUES('delete', ...)."
-        ),
-    )
     def test_same_path_updates_in_place(self, client, seeded_library):
         with transaction():
             new_id = queries.upsert_track(_track_row(

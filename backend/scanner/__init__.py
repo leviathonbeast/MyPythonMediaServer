@@ -10,6 +10,7 @@ from .scanner import (
     get_recover_progress,
     start_recover_artwork_async,
 )
+from .watcher import start_watcher, stop_watcher
 
 __all__ = [
     "ScanProgress",
@@ -21,4 +22,6 @@ __all__ = [
     "cancel_recover_artwork",
     "get_recover_progress",
     "start_recover_artwork_async",
+    "start_watcher",
+    "stop_watcher",
 ]

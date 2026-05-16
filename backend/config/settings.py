@@ -145,6 +145,29 @@ class Settings(BaseSettings):
     # Batch size for DB writes during scanning. Bigger = faster but more memory.
     scanner_batch_size: int = Field(default=200)
 
+    # Periodic-rescan watcher. We use polling (not inotify) because the typical
+    # deployment has music on an NFS/SMB share modified from another machine —
+    # the Linux kernel doesn't fire inotify events for remote writes, so a
+    # filesystem-event watcher would silently miss everything. A periodic full
+    # scan is cheap thanks to the mtime+size short-circuit in phase 1: a
+    # no-change pass over 50k files takes only a few seconds.
+    scanner_watch_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, a background thread triggers a library scan every "
+            "`scanner_watch_interval_seconds`. Safe to leave off and rely on "
+            "manual scans."
+        ),
+    )
+    scanner_watch_interval_seconds: int = Field(
+        default=300,
+        description=(
+            "Seconds between automatic rescans when scanner_watch_enabled is "
+            "true. Floor of 30s is enforced at runtime to avoid pathological "
+            "configs hammering the scanner."
+        ),
+    )
+
     # ---- Streaming ---------------------------------------------------------
     # Default chunk size for HTTP range responses. 64KB is a reasonable sweet
     # spot — small enough that seeking feels instant, large enough that we
