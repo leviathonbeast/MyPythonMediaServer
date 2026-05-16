@@ -886,6 +886,12 @@ export interface ArtistDetail {
     compilations: ArtistAlbum[];
     other: ArtistAlbum[];
   };
+  /**
+   * Tracks where this artist is credited but the album-artist is someone
+   * else — compilations, soundtracks, guest features. Lets the artist
+   * page show contributions for artists who never appear as album-artist.
+   */
+  appearances: SubsonicSong[];
   bio: {
     summary: string;
     content: string;

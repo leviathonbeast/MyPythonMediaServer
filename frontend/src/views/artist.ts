@@ -15,9 +15,10 @@
 //   - Album sections, in this order, skipping any that are empty:
 //     Albums, EPs, Singles, Compilations, Other.
 
-import { getArtistDetail, coverArtUrl, type ArtistAlbum } from "../api";
+import { getArtistDetail, coverArtUrl, type ArtistAlbum, type SubsonicSong } from "../api";
 import { albumCardHtml } from "./albums";
 import { escapeHtml } from "./_util";
+import { player, fmtDuration } from "../player";
 
 const SECTION_LABELS: Array<[keyof ArtistDetailGrouped, string]> = [
   ["albums",       "Albums"],
@@ -42,6 +43,7 @@ export async function renderArtist(host: HTMLElement, id: string): Promise<void>
   try {
     const data = await getArtistDetail(id);
     const grouped = data.albums_grouped as ArtistDetailGrouped;
+    const appearances = data.appearances ?? [];
 
     const totalAlbums =
       grouped.albums.length + grouped.eps.length +
@@ -63,11 +65,71 @@ export async function renderArtist(host: HTMLElement, id: string): Promise<void>
         if (items.length === 0) return "";
         return sectionHtml(label, items);
       }).join("")}
-      ${totalAlbums === 0 ? `<div class="empty">No albums for this artist.</div>` : ""}
+      ${appearances.length > 0 ? appearancesHtml(appearances) : ""}
+      ${totalAlbums === 0 && appearances.length === 0
+        ? `<div class="empty">No albums for this artist.</div>`
+        : ""}
     `;
+
+    if (appearances.length > 0) wireAppearanceClicks(host, appearances);
   } catch (e) {
     host.innerHTML = `<div class="empty">Could not load artist: ${escapeHtml((e as Error).message)}</div>`;
   }
+}
+
+function appearancesHtml(songs: SubsonicSong[]): string {
+  return `
+    <div class="section-head">
+      <h2>Appears on</h2>
+      <span class="rule"></span>
+      <span class="count">${songs.length}</span>
+    </div>
+    <div class="track-table" data-appearances>
+      <table>
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>Title</th>
+            <th>Album</th>
+            <th>Year</th>
+            <th class="duration">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${songs.map((s, i) => appearanceRowHtml(s, i)).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function appearanceRowHtml(s: SubsonicSong, idx: number): string {
+  const albumCell = s.albumId
+    ? `<a href="#/album/${encodeURIComponent(s.albumId)}">${escapeHtml(s.album ?? "")}</a>`
+    : escapeHtml(s.album ?? "");
+  return `
+    <tr data-idx="${idx}" style="cursor:pointer">
+      <td class="num">${idx + 1}</td>
+      <td class="title">${escapeHtml(s.title)}</td>
+      <td>${albumCell}</td>
+      <td>${s.year ?? ""}</td>
+      <td class="duration">${fmtDuration(s.duration)}</td>
+    </tr>
+  `;
+}
+
+function wireAppearanceClicks(host: HTMLElement, songs: SubsonicSong[]): void {
+  const tbody = host.querySelector<HTMLTableSectionElement>("[data-appearances] tbody");
+  if (!tbody) return;
+  tbody.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    // Let nested links (album navigation) work normally.
+    if (target.closest("a")) return;
+    const tr = target.closest("tr");
+    if (!tr) return;
+    const idx = Number(tr.dataset.idx);
+    if (Number.isFinite(idx)) player.playQueue(songs, idx);
+  });
 }
 
 function heroHtml(name: string, imageUrl: string | null, albumCount: number): string {
@@ -109,10 +171,18 @@ function bioHtml(bio: { summary: string; content: string; url: string | null; ta
     truncated = true;
   }
 
+  // Last.fm exposes "tags" as genre-ish labels for the artist. They don't
+  // necessarily match the user's library tags, but they're a reasonable
+  // jump-off point — clicking one routes to the genre browse view, which
+  // shows whatever songs/albums Muse has tagged that way locally (empty
+  // page when the user's library doesn't carry that tag, which is fine
+  // UX for a "try" link).
   const tagsHtml = bio.tags.length > 0
     ? `<div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
          ${bio.tags.map(t => `
-           <span class="label" style="border:1px solid var(--rule);padding:.25rem .6rem;color:var(--muted);font-size:var(--t-micro)">${escapeHtml(t)}</span>
+           <a href="#/genre/${encodeURIComponent(t)}"
+              class="label"
+              style="border:1px solid var(--rule);padding:.25rem .6rem;color:var(--muted);font-size:var(--t-micro);text-decoration:none">${escapeHtml(t)}</a>
          `).join("")}
        </div>`
     : "";

@@ -55,6 +55,16 @@ scanner_workers: 4
 # Larger = faster; smaller = more granular crash recovery.
 scanner_batch_size: 200
 
+# Periodic-rescan watcher. When enabled, a background thread triggers
+# `start_scan_async()` every `scanner_watch_interval_seconds`. This is the
+# right tool when your music sits on a NAS modified from another machine —
+# Linux inotify can't see remote writes, so a real filesystem-event watcher
+# would silently never fire. The existing diff-based scanner short-circuits
+# on unchanged mtime+size, so an idle tick over a 50k-file library only
+# costs a few seconds of stat() work.
+scanner_watch_enabled: false
+scanner_watch_interval_seconds: 300   # 5 minutes; floor of 30s enforced at runtime
+
 # --- Streaming ------------------------------------------------------------- #
 
 # Paths to ffmpeg and ffprobe. Use "ffmpeg"/"ffprobe" if they are on PATH,
