@@ -53,17 +53,15 @@ _DEFAULT_CACHE_PAGES = -30000  # ~120 MB — enough for hot API queries
 _SCANNER_CACHE_PAGES = -40000  # ~160 MB — ample for libraries up to ~150k tracks
 
 
-def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connection:
+def _tune_sqlite(conn: sqlite3.Connection, cache_pages: int) -> None:
     """
-    Open a fresh connection with the pragmas we always want.
+    Apply every SQLite-specific PRAGMA we care about to a fresh connection.
 
-    detect_types lets us read TIMESTAMP columns as datetime objects if we ever
-    add them. row_factory=Row gives us dict-like access to columns.
+    All the dialect-specific knobs are concentrated here so that swapping
+    `_new_connection()` for a Postgres connection factory in a future port
+    means replacing one function rather than picking PRAGMAs out of a
+    longer initialiser.
     """
-    if _db_path is None:
-        raise RuntimeError("init_db() must be called before any DB access")
-    conn = sqlite3.connect(_db_path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
-    conn.row_factory = sqlite3.Row
     # foreign_keys must be set on every connection — it's not a database-level
     # setting in SQLite.
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -94,6 +92,20 @@ def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connecti
     # Keep TEMP B-TREEs (group-by/order-by spill, automatic indexes) in RAM
     # rather than on disk. Affects every aggregating browse query.
     conn.execute("PRAGMA temp_store = MEMORY;")
+
+
+def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connection:
+    """
+    Open a fresh connection with the pragmas we always want.
+
+    detect_types lets us read TIMESTAMP columns as datetime objects if we ever
+    add them. row_factory=Row gives us dict-like access to columns.
+    """
+    if _db_path is None:
+        raise RuntimeError("init_db() must be called before any DB access")
+    conn = sqlite3.connect(_db_path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    _tune_sqlite(conn, cache_pages)
     return conn
 
 
