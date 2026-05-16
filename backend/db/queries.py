@@ -69,9 +69,14 @@ def star_item(user_id: int, target_type: str, target_id: int) -> None:
     get_conn().execute(
         """
         INSERT OR IGNORE INTO starred (user_id, target_type, target_id, starred_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (:user_id, :target_type, :target_id, :starred_at)
         """,
-        (user_id, target_type, target_id, int(time.time())),
+        {
+            "user_id": user_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "starred_at": int(time.time()),
+        },
     )
 
 
@@ -79,9 +84,11 @@ def unstar_item(user_id: int, target_type: str, target_id: int) -> None:
     get_conn().execute(
         """
         DELETE FROM starred
-         WHERE user_id = ? AND target_type = ? AND target_id = ?
+         WHERE user_id = :user_id
+           AND target_type = :target_type
+           AND target_id = :target_id
         """,
-        (user_id, target_type, target_id),
+        {"user_id": user_id, "target_type": target_type, "target_id": target_id},
     )
 
 
@@ -130,10 +137,10 @@ def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN albums  al    ON s.target_type = 'album'  AND s.target_id = al.id
      LEFT JOIN artists al_ar ON al.artist_id = al_ar.id
      LEFT JOIN artists ar    ON s.target_type = 'artist' AND s.target_id = ar.id
-         WHERE s.user_id = ?
+         WHERE s.user_id = :user_id
       ORDER BY s.starred_at DESC
         """,
-            (user_id,),
+            {"user_id": user_id},
         )
         .fetchall()
     )
