@@ -52,44 +52,44 @@ function _md5(str: string): string {
 
     // Each group of 4 lines cycles: update a, then d, then c, then b.
     // Round 1  F(b,c,d)=(b&c)|(~b&d)
-    a=op((b&c)|(~b&d),a,b,w(0), 7,-680876936);  d=op((a&b)|(~a&c),d,a,w(1), 12,-389564586);
-    c=op((d&a)|(~d&b),c,d,w(2), 17, 606105819); b=op((c&d)|(~c&a),b,c,w(3), 22,-1044525330);
-    a=op((b&c)|(~b&d),a,b,w(4), 7,-176418897);  d=op((a&b)|(~a&c),d,a,w(5), 12, 1200080426);
-    c=op((d&a)|(~d&b),c,d,w(6), 17,-1473231341);b=op((c&d)|(~c&a),b,c,w(7), 22,  -45705983);
-    a=op((b&c)|(~b&d),a,b,w(8), 7, 1770035416); d=op((a&b)|(~a&c),d,a,w(9), 12,-1958414417);
-    c=op((d&a)|(~d&b),c,d,w(10),17,    -42063); b=op((c&d)|(~c&a),b,c,w(11),22,-1990404162);
-    a=op((b&c)|(~b&d),a,b,w(12),7, 1804603682); d=op((a&b)|(~a&c),d,a,w(13),12,  -40341101);
-    c=op((d&a)|(~d&b),c,d,w(14),17,-1502002290);b=op((c&d)|(~c&a),b,c,w(15),22, 1236535329);
+    a = op((b & c) | (~b & d), a, b, w(0), 7, -680876936); d = op((a & b) | (~a & c), d, a, w(1), 12, -389564586);
+    c = op((d & a) | (~d & b), c, d, w(2), 17, 606105819); b = op((c & d) | (~c & a), b, c, w(3), 22, -1044525330);
+    a = op((b & c) | (~b & d), a, b, w(4), 7, -176418897); d = op((a & b) | (~a & c), d, a, w(5), 12, 1200080426);
+    c = op((d & a) | (~d & b), c, d, w(6), 17, -1473231341); b = op((c & d) | (~c & a), b, c, w(7), 22, -45705983);
+    a = op((b & c) | (~b & d), a, b, w(8), 7, 1770035416); d = op((a & b) | (~a & c), d, a, w(9), 12, -1958414417);
+    c = op((d & a) | (~d & b), c, d, w(10), 17, -42063); b = op((c & d) | (~c & a), b, c, w(11), 22, -1990404162);
+    a = op((b & c) | (~b & d), a, b, w(12), 7, 1804603682); d = op((a & b) | (~a & c), d, a, w(13), 12, -40341101);
+    c = op((d & a) | (~d & b), c, d, w(14), 17, -1502002290); b = op((c & d) | (~c & a), b, c, w(15), 22, 1236535329);
 
     // Round 2  G(b,c,d)=(b&d)|(c&~d)
-    a=op((b&d)|(c&~d),a,b,w(1), 5, -165796510); d=op((a&c)|(b&~c),d,a,w(6), 9,-1069501632);
-    c=op((d&b)|(a&~b),c,d,w(11),14,  643717713); b=op((c&a)|(d&~a),b,c,w(0), 20,-373897302);
-    a=op((b&d)|(c&~d),a,b,w(5), 5, -701558691); d=op((a&c)|(b&~c),d,a,w(10),9,   38016083);
-    c=op((d&b)|(a&~b),c,d,w(15),14, -660478335);b=op((c&a)|(d&~a),b,c,w(4), 20,-405537848);
-    a=op((b&d)|(c&~d),a,b,w(9), 5,  568446438); d=op((a&c)|(b&~c),d,a,w(14),9,-1019803690);
-    c=op((d&b)|(a&~b),c,d,w(3), 14, -187363961);b=op((c&a)|(d&~a),b,c,w(8), 20, 1163531501);
-    a=op((b&d)|(c&~d),a,b,w(13),5,-1444681467); d=op((a&c)|(b&~c),d,a,w(2), 9,  -51403784);
-    c=op((d&b)|(a&~b),c,d,w(7), 14, 1735328473);b=op((c&a)|(d&~a),b,c,w(12),20,-1926607734);
+    a = op((b & d) | (c & ~d), a, b, w(1), 5, -165796510); d = op((a & c) | (b & ~c), d, a, w(6), 9, -1069501632);
+    c = op((d & b) | (a & ~b), c, d, w(11), 14, 643717713); b = op((c & a) | (d & ~a), b, c, w(0), 20, -373897302);
+    a = op((b & d) | (c & ~d), a, b, w(5), 5, -701558691); d = op((a & c) | (b & ~c), d, a, w(10), 9, 38016083);
+    c = op((d & b) | (a & ~b), c, d, w(15), 14, -660478335); b = op((c & a) | (d & ~a), b, c, w(4), 20, -405537848);
+    a = op((b & d) | (c & ~d), a, b, w(9), 5, 568446438); d = op((a & c) | (b & ~c), d, a, w(14), 9, -1019803690);
+    c = op((d & b) | (a & ~b), c, d, w(3), 14, -187363961); b = op((c & a) | (d & ~a), b, c, w(8), 20, 1163531501);
+    a = op((b & d) | (c & ~d), a, b, w(13), 5, -1444681467); d = op((a & c) | (b & ~c), d, a, w(2), 9, -51403784);
+    c = op((d & b) | (a & ~b), c, d, w(7), 14, 1735328473); b = op((c & a) | (d & ~a), b, c, w(12), 20, -1926607734);
 
     // Round 3  H(b,c,d)=b^c^d
-    a=op(b^c^d,a,b,w(5), 4,   -378558); d=op(a^b^c,d,a,w(8), 11,-2022574463);
-    c=op(d^a^b,c,d,w(11),16,1839030562);b=op(c^d^a,b,c,w(14),23,  -35309556);
-    a=op(b^c^d,a,b,w(1), 4,-1530992060);d=op(a^b^c,d,a,w(4), 11, 1272893353);
-    c=op(d^a^b,c,d,w(7), 16, -155497632);b=op(c^d^a,b,c,w(10),23,-1094730640);
-    a=op(b^c^d,a,b,w(13),4,  681279174); d=op(a^b^c,d,a,w(0), 11, -358537222);
-    c=op(d^a^b,c,d,w(3), 16, -722521979);b=op(c^d^a,b,c,w(6), 23,   76029189);
-    a=op(b^c^d,a,b,w(9), 4, -640364487); d=op(a^b^c,d,a,w(12),11, -421815835);
-    c=op(d^a^b,c,d,w(15),16,  530742520);b=op(c^d^a,b,c,w(2), 23, -995338651);
+    a = op(b ^ c ^ d, a, b, w(5), 4, -378558); d = op(a ^ b ^ c, d, a, w(8), 11, -2022574463);
+    c = op(d ^ a ^ b, c, d, w(11), 16, 1839030562); b = op(c ^ d ^ a, b, c, w(14), 23, -35309556);
+    a = op(b ^ c ^ d, a, b, w(1), 4, -1530992060); d = op(a ^ b ^ c, d, a, w(4), 11, 1272893353);
+    c = op(d ^ a ^ b, c, d, w(7), 16, -155497632); b = op(c ^ d ^ a, b, c, w(10), 23, -1094730640);
+    a = op(b ^ c ^ d, a, b, w(13), 4, 681279174); d = op(a ^ b ^ c, d, a, w(0), 11, -358537222);
+    c = op(d ^ a ^ b, c, d, w(3), 16, -722521979); b = op(c ^ d ^ a, b, c, w(6), 23, 76029189);
+    a = op(b ^ c ^ d, a, b, w(9), 4, -640364487); d = op(a ^ b ^ c, d, a, w(12), 11, -421815835);
+    c = op(d ^ a ^ b, c, d, w(15), 16, 530742520); b = op(c ^ d ^ a, b, c, w(2), 23, -995338651);
 
     // Round 4  I(b,c,d)=c^(b|~d)
-    a=op(c^(b|~d),a,b,w(0), 6, -198630844); d=op(b^(a|~c),d,a,w(7), 10, 1126891415);
-    c=op(a^(d|~b),c,d,w(14),15,-1416354905);b=op(d^(c|~a),b,c,w(5), 21,  -57434055);
-    a=op(c^(b|~d),a,b,w(12),6, 1700485571); d=op(b^(a|~c),d,a,w(3), 10,-1894986606);
-    c=op(a^(d|~b),c,d,w(10),15,   -1051523);b=op(d^(c|~a),b,c,w(1), 21,-2054922799);
-    a=op(c^(b|~d),a,b,w(8), 6, 1873313359); d=op(b^(a|~c),d,a,w(15),10,  -30611744);
-    c=op(a^(d|~b),c,d,w(6), 15,-1560198380);b=op(d^(c|~a),b,c,w(13),21, 1309151649);
-    a=op(c^(b|~d),a,b,w(4), 6, -145523070); d=op(b^(a|~c),d,a,w(11),10,-1120210379);
-    c=op(a^(d|~b),c,d,w(2), 15,  718787259);b=op(d^(c|~a),b,c,w(9), 21, -343485551);
+    a = op(c ^ (b | ~d), a, b, w(0), 6, -198630844); d = op(b ^ (a | ~c), d, a, w(7), 10, 1126891415);
+    c = op(a ^ (d | ~b), c, d, w(14), 15, -1416354905); b = op(d ^ (c | ~a), b, c, w(5), 21, -57434055);
+    a = op(c ^ (b | ~d), a, b, w(12), 6, 1700485571); d = op(b ^ (a | ~c), d, a, w(3), 10, -1894986606);
+    c = op(a ^ (d | ~b), c, d, w(10), 15, -1051523); b = op(d ^ (c | ~a), b, c, w(1), 21, -2054922799);
+    a = op(c ^ (b | ~d), a, b, w(8), 6, 1873313359); d = op(b ^ (a | ~c), d, a, w(15), 10, -30611744);
+    c = op(a ^ (d | ~b), c, d, w(6), 15, -1560198380); b = op(d ^ (c | ~a), b, c, w(13), 21, 1309151649);
+    a = op(c ^ (b | ~d), a, b, w(4), 6, -145523070); d = op(b ^ (a | ~c), d, a, w(11), 10, -1120210379);
+    c = op(a ^ (d | ~b), c, d, w(2), 15, 718787259); b = op(d ^ (c | ~a), b, c, w(9), 21, -343485551);
 
     [a, b, c, d] = [add(a, aa), add(b, bb), add(c, cc), add(d, dd)];
   }
@@ -355,6 +355,7 @@ export interface SubsonicArtist {
   name: string;
   albumCount?: number;
   coverArt?: string;
+  starred?: string;
 }
 export interface SubsonicIndex {
   name: string;
@@ -370,6 +371,7 @@ export interface SubsonicAlbum {
   duration?: number;
   year?: number;
   genre?: string;
+  starred?: string;
   created?: string;
 }
 export interface SubsonicSong {
@@ -393,6 +395,7 @@ export interface SubsonicSong {
   artistId?: string;
   type?: string;
   discNumber?: number;
+  starred?: string;
   lyrics?: string | null; //** Lyrics implementation */
 }
 
@@ -453,6 +456,48 @@ export async function getSong(id: string): Promise<SubsonicSong> {
   return result.song;
 }
 
+export async function getStarred2(): Promise<{
+  artist: SubsonicArtist[];
+  album: SubsonicAlbum[];
+  song: SubsonicSong[];
+}> {
+  const env = await subsonic<{
+    starred2: { artist?: SubsonicArtist[]; album?: SubsonicAlbum[]; song?: SubsonicSong[] };
+  }>("getStarred2");
+  const r = env.starred2 ?? {};
+  return {
+    artist: r.artist ?? [],
+    album: r.album ?? [],
+    song: r.song ?? [],
+  };
+}
+
+export async function starItems(
+  opts: {
+    id?: string[];
+    albumId?: string[];
+    artistId?: string[];
+  }): Promise<void> {
+  // subsonic() uses URLSearchParams.set() which collapses duplicates,
+  // so build the query ourselves to send repeated id/albumId/artistId.
+  const params = subsonicAuthParams();
+  for (const x of opts.id ?? []) params.append("id", x);
+  for (const x of opts.albumId ?? []) params.append("albumId", x);
+  for (const x of opts.artistId ?? []) params.append("artistId", x);
+  const res = await fetch(`/rest/star.view?${params.toString()}`, {
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    if (res.status === 401) signOut();
+    throw new Error(`HTTP ${res.status} on starItems`);
+  }
+  const body = await res.json();
+  const env = body["subsonic-response"];
+  if (!env || env.status === "failed") {
+    throw new Error(env?.error?.message ?? "starItems failed");
+  }
+}
+
 export async function search3(
   query: string,
   opts: {
@@ -469,17 +514,17 @@ export async function search3(
   }>("search3", {
     query,
     artistCount: opts.artistCount ?? 20,
-    albumCount:  opts.albumCount  ?? 20,
-    songCount:   opts.songCount   ?? 20,
+    albumCount: opts.albumCount ?? 20,
+    songCount: opts.songCount ?? 20,
     artistOffset: opts.artistOffset ?? 0,
-    albumOffset:  opts.albumOffset  ?? 0,
-    songOffset:   opts.songOffset   ?? 0,
+    albumOffset: opts.albumOffset ?? 0,
+    songOffset: opts.songOffset ?? 0,
   });
   const r = env.searchResult3 ?? {};
   return {
     artist: r.artist ?? [],
-    album:  r.album  ?? [],
-    song:   r.song   ?? [],
+    album: r.album ?? [],
+    song: r.song ?? [],
   };
 }
 

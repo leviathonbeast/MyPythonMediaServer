@@ -397,6 +397,82 @@ def _migration_013_resort_symbols_last(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_016_fts5_contentless_delete(conn: sqlite3.Connection) -> None:
+    """Rebuild virt_fts5 with contentless_delete=1.
+
+    Migration 007 created the FTS5 table with content='' but no
+    contentless_delete option. In that mode, plain DELETE/UPDATE on the
+    FTS5 table is forbidden — so the fts5_track_delete and fts5_track_update
+    triggers blew up the first time a real DELETE or UPDATE fired on tracks
+    (which only happened once a folder had files moved/removed).
+
+    contentless_delete=1 (SQLite 3.43+) lifts that restriction, letting the
+    existing trigger bodies work unchanged.
+    """
+    # Drop triggers first so dropping the table doesn't fire them.
+    conn.execute("DROP TRIGGER IF EXISTS fts5_track_insert")
+    conn.execute("DROP TRIGGER IF EXISTS fts5_track_delete")
+    conn.execute("DROP TRIGGER IF EXISTS fts5_track_update")
+
+    conn.execute("DROP TABLE IF EXISTS virt_fts5")
+
+    conn.execute("""
+        CREATE VIRTUAL TABLE virt_fts5 USING fts5(
+            title,
+            genre,
+            artist_name,
+            album_name,
+
+            content='',
+            contentless_delete=1
+        )
+    """)
+
+    conn.execute("""
+        INSERT INTO virt_fts5(rowid, title, genre, artist_name, album_name)
+        SELECT tracks.id, tracks.title, tracks.genre, artists.name, albums.name
+          FROM tracks
+     LEFT JOIN artists ON tracks.artist_id = artists.id
+     LEFT JOIN albums  ON tracks.album_id  = albums.id
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER fts5_track_insert AFTER INSERT ON tracks
+        BEGIN
+            INSERT INTO virt_fts5(rowid, title, genre, artist_name, album_name)
+            VALUES (
+                NEW.id,
+                NEW.title,
+                NEW.genre,
+                (SELECT name FROM artists WHERE id = NEW.artist_id),
+                (SELECT name FROM albums  WHERE id = NEW.album_id)
+            );
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER fts5_track_delete AFTER DELETE ON tracks
+        BEGIN
+            DELETE FROM virt_fts5 WHERE rowid = OLD.id;
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER fts5_track_update AFTER UPDATE ON tracks
+        BEGIN
+            DELETE FROM virt_fts5 WHERE rowid = OLD.id;
+            INSERT INTO virt_fts5(rowid, title, genre, artist_name, album_name)
+            VALUES (
+                NEW.id,
+                NEW.title,
+                NEW.genre,
+                (SELECT name FROM artists WHERE id = NEW.artist_id),
+                (SELECT name FROM albums  WHERE id = NEW.album_id)
+            );
+        END
+    """)
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 MIGRATIONS: List[Migration] = [
     (1, _migration_001_initial),
@@ -414,6 +490,7 @@ MIGRATIONS: List[Migration] = [
     (13, _migration_013_resort_symbols_last),
     (14, _migration_014_resort_apple_music_style),
     (15, _migration_015_performance_indexes),
+    (16, _migration_016_fts5_contentless_delete),
 ]
 
 
