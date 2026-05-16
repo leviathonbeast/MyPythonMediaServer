@@ -129,19 +129,28 @@ def get_song(
 def get_cover_art(
     request: Request,
     id: str = Query(...),
-    size: Optional[int] = Query(
-        default=None
-    ),  # noqa: ARG001 — accepted, not implemented
+    size: Optional[int] = Query(default=None),
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """
-    Serve a cached cover art file by hash id. `size` is accepted for protocol
-    compatibility; on-the-fly resizing is a TODO (would use Pillow).
+    Serve a cached cover art file by hash id, optionally resized.
 
-    The id is already a content hash, so the URL is immutable — we cache it
-    for a year and use the id as the ETag so browsers get 304s on revalidation.
+    When `size` is provided, returns a `<= size`x`<= size` JPEG variant
+    (aspect preserved). Variants are cached on disk as `<id>_<size>.jpg`
+    next to the source; the first request takes the resize hit (~50-200ms
+    for a typical 2-3MB FLAC embed), every subsequent request is a plain
+    file read. Sources smaller than `size` are served unchanged — no
+    point upscaling.
+
+    The id is a content hash so the URL is immutable. Cache for a year
+    and use (id, size) as the ETag so different sizes don't collide and
+    so browsers get 304s on revalidation.
     """
-    path = artwork_module.find_artwork_path(id)
+    if size is not None and size > 0:
+        path = artwork_module.resize_cached(id, size)
+    else:
+        path = artwork_module.find_artwork_path(id)
+
     if path is None:
         return responses.error(
             responses.ERR_NOT_FOUND,
@@ -150,7 +159,7 @@ def get_cover_art(
             callback=ctx.callback,
         )
 
-    etag = f'"{id}"'
+    etag = f'"{id}-{size}"' if size else f'"{id}"'
     cache_headers = {
         "Cache-Control": "public, max-age=31536000, immutable",
         "ETag": etag,

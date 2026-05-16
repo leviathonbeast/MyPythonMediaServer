@@ -12,16 +12,24 @@ WHY hash-based filenames:
     * Hash is a stable id we can use in the Subsonic getCoverArt URL.
     * Easy to garbage collect later — files unreferenced by any album row are
       removable.
+
+Resized variants are written next to the source as `<hash>_<size>.jpg` and
+share the same lifecycle: the GC sweep in db/maintenance.py strips a trailing
+"_<digits>" before comparing against `albums.cover_art_id`, so resized
+thumbnails are removed in lock-step with their source.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 from typing import Optional, Tuple
 
 from backend.config import get_settings
+
+log = logging.getLogger(__name__)
 
 
 def _detect_image_format(data: bytes) -> Tuple[str, str]:
@@ -75,6 +83,73 @@ def find_artwork_path(cover_art_id: str) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+# Subsonic clients in the wild request sizes like 32/64/128/300/600. Cap at
+# 1024 so a malicious or buggy client passing size=10000 doesn't burn CPU
+# re-encoding at full resolution for no visual benefit.
+_RESIZE_MAX_DIMENSION = 1024
+
+# Pillow is imported lazily inside resize_cached so importing the artwork
+# module doesn't require Pillow at the scanner layer (where it isn't used).
+
+
+def resize_cached(cover_art_id: str, size: int) -> Optional[Path]:
+    """Return a path to a `size`-pixel variant, creating it on first request.
+
+    `size` is interpreted Subsonic-style: the longest side of the output is
+    at most `size` pixels; aspect ratio is preserved. Output is always JPEG
+    because the endpoint always serves image/jpeg for resized variants and
+    JPEG is a smaller-on-the-wire choice for thumbnails than re-encoded PNG.
+
+    Returns:
+        * Path to a cached resized file, OR
+        * The source path unchanged when `size` would upscale (no point
+          re-encoding to make it look the same or worse), OR
+        * None when the source isn't in the cache or the request is invalid.
+
+    Concurrency: two requests for the same (id, size) racing through this
+    function both end up renaming the same content into place. The second
+    rename clobbers the first harmlessly because the resized output is
+    deterministic from (source bytes, size).
+    """
+    if size <= 0:
+        return None
+    size = min(size, _RESIZE_MAX_DIMENSION)
+
+    src = find_artwork_path(cover_art_id)
+    if src is None:
+        return None
+
+    cache_dir = Path(get_settings().artwork_cache_dir)
+    out = cache_dir / f"{cover_art_id}_{size}.jpg"
+    if out.exists():
+        return out
+
+    # Imported here so module import stays cheap and a missing Pillow only
+    # bites at the moment a resize is actually attempted.
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(src) as im:
+            # Don't upscale — Subsonic clients ask for "at most N pixels", and
+            # blowing a 200px source up to 600px just wastes bytes.
+            if max(im.size) <= size:
+                return src
+            im = ImageOps.exif_transpose(im)
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            im.thumbnail((size, size), Image.LANCZOS)
+            # Write to a temp file then rename so a crash mid-encode never
+            # leaves a half-written variant in the cache.
+            tmp = out.with_suffix(".tmp")
+            im.save(tmp, format="JPEG", quality=85, optimize=True)
+            tmp.replace(out)
+    except Exception as e:
+        log.warning("resize_cached(%s, %d) failed: %s", cover_art_id, size, e)
+        return src
+
+    return out
 
 
 def find_folder_artwork(track_path: str) -> Optional[bytes]:

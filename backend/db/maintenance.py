@@ -212,10 +212,14 @@ def _cleanup_orphan_artwork(artwork_dir: str) -> tuple[int, int]:
     """
     Delete files in the artwork cache that are no longer referenced.
 
-    We treat the file's basename (without extension) as the cover-art id,
-    because that's exactly how `artwork.store_artwork()` writes them
-    (sha1[:16].ext). Anything in the cache dir whose basename is NOT in
-    `albums.cover_art_id` is unreachable and can be deleted.
+    File names in the cache are either:
+        <hash>.<ext>           — the original, written by store_artwork
+        <hash>_<size>.jpg      — a resized variant, written by resize_cached
+
+    To compare against `albums.cover_art_id` we strip the extension AND a
+    trailing "_<digits>" suffix, so a resized thumbnail is treated as the
+    same artwork as its source and removed in lock-step when the source
+    becomes unreferenced.
 
     Returns (files_removed, bytes_freed).
     """
@@ -232,9 +236,16 @@ def _cleanup_orphan_artwork(artwork_dir: str) -> tuple[int, int]:
                 if not entry.is_file():
                     continue
                 name = entry.name
-                # Strip extension to compare against cover_art_id.
+                # Strip extension first.
                 dot = name.rfind(".")
                 stem = name[:dot] if dot >= 0 else name
+                # Then strip a trailing "_<digits>" so resized variants
+                # collapse onto their source id. Cover-art ids are 16 hex
+                # chars (never contain underscores), so '_' is an
+                # unambiguous delimiter here.
+                us = stem.rfind("_")
+                if us > 0 and stem[us + 1:].isdigit():
+                    stem = stem[:us]
                 if stem in referenced:
                     continue
                 try:

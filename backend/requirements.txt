@@ -14,6 +14,11 @@ python-jose[cryptography]>=3.3.0
 # ---- Audio metadata ---------------------------------------------------------
 mutagen>=1.47.0
 
+# ---- Image processing -------------------------------------------------------
+# Used for on-the-fly cover-art resizing in getCoverArt. Pillow's bundled
+# libjpeg/libpng/libwebp covers every format we sniff in scanner/artwork.py.
+Pillow>=10.0.0
+
 # ---- HTTP utilities ---------------------------------------------------------
 python-multipart>=0.0.6   # required by FastAPI for form uploads (future use)
 slowapi>=0.1.9
