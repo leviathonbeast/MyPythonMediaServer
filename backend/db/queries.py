@@ -241,12 +241,17 @@ def play_count(user_id: int, track_id: int) -> None:
     get_conn().execute(
         """
         INSERT INTO play_counts (user_id, track_id, play_count, last_played)
-        VALUES (?, ?, ?, ?)
+        VALUES (:user_id, :track_id, :play_count, :last_played)
         ON CONFLICT(user_id, track_id) DO UPDATE SET
             play_count  = play_counts.play_count + 1,
             last_played = excluded.last_played
         """,
-        (user_id, track_id, 1, int(time.time())),
+        {
+            "user_id": user_id,
+            "track_id": track_id,
+            "play_count": 1,
+            "last_played": int(time.time()),
+        },
     )
 
 
@@ -254,8 +259,11 @@ def get_playcount_by_user(user_id: int, track_id: int) -> int:
     row = (
         get_conn()
         .execute(
-            "SELECT play_count FROM play_counts WHERE user_id = ? AND track_id = ?",
-            (user_id, track_id),
+            """
+            SELECT play_count FROM play_counts
+             WHERE user_id = :user_id AND track_id = :track_id
+            """,
+            {"user_id": user_id, "track_id": track_id},
         )
         .fetchone()
     )
