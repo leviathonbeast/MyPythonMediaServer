@@ -184,8 +184,8 @@ def get_music_folder(folder_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, path FROM music_folders WHERE id = ?",
-            (folder_id,),
+            "SELECT id, name, path FROM music_folders WHERE id = :id",
+            {"id": folder_id},
         )
         .fetchone()
     )
@@ -196,8 +196,8 @@ def get_music_folder_by_path(path: str) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, path FROM music_folders WHERE path = ?",
-            (path,),
+            "SELECT id, name, path FROM music_folders WHERE path = :path",
+            {"path": path},
         )
         .fetchone()
     )
@@ -212,8 +212,8 @@ def add_music_folder(name: str, path: str) -> int:
     raising sqlite3.IntegrityError on duplicates.
     """
     cur = get_conn().execute(
-        "INSERT INTO music_folders (name, path) VALUES (?, ?)",
-        (name, path),
+        "INSERT INTO music_folders (name, path) VALUES (:name, :path)",
+        {"name": name, "path": path},
     )
     return cur.lastrowid
 
@@ -225,7 +225,10 @@ def delete_music_folder(folder_id: int) -> bool:
     Aggregate cleanup of newly-empty albums/artists is the GC's job, not
     ours — call run_gc() afterwards.
     """
-    cur = get_conn().execute("DELETE FROM music_folders WHERE id = ?", (folder_id,))
+    cur = get_conn().execute(
+        "DELETE FROM music_folders WHERE id = :id",
+        {"id": folder_id},
+    )
     return cur.rowcount > 0
 
 
