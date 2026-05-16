@@ -1268,10 +1268,10 @@ def search3(
         """
         SELECT id, name, album_count
           FROM artists
-         WHERE name LIKE ? COLLATE NOCASE
-         LIMIT ? OFFSET ?
+         WHERE name LIKE :pattern COLLATE NOCASE
+         LIMIT :limit OFFSET :offset
         """,
-        (pattern, artist_count, artist_offset),
+        {"pattern": pattern, "limit": artist_count, "offset": artist_offset},
     ).fetchall()
 
     albums = conn.execute(
@@ -1280,11 +1280,11 @@ def search3(
                al.artist_id, ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
-         WHERE al.name LIKE ? COLLATE NOCASE
-            OR ar.name LIKE ? COLLATE NOCASE
-         LIMIT ? OFFSET ?
+         WHERE al.name LIKE :pattern COLLATE NOCASE
+            OR ar.name LIKE :pattern COLLATE NOCASE
+         LIMIT :limit OFFSET :offset
         """,
-        (pattern, pattern, album_count, album_offset),
+        {"pattern": pattern, "limit": album_count, "offset": album_offset},
     ).fetchall()
 
     if not query:
@@ -1297,9 +1297,9 @@ def search3(
               FROM tracks t
          LEFT JOIN artists ar ON ar.id = t.artist_id
          LEFT JOIN albums  al ON al.id = t.album_id
-             LIMIT ? OFFSET ?
+             LIMIT :limit OFFSET :offset
             """,
-            (song_count, song_offset),
+            {"limit": song_count, "offset": song_offset},
         ).fetchall()
     else:
         songs = conn.execute(
@@ -1312,10 +1312,10 @@ def search3(
               JOIN virt_fts5 f  ON f.rowid = t.id
          LEFT JOIN artists ar   ON ar.id = t.artist_id
          LEFT JOIN albums  al   ON al.id = t.album_id
-             WHERE virt_fts5 MATCH ?
-             LIMIT ? OFFSET ?
+             WHERE virt_fts5 MATCH :query
+             LIMIT :limit OFFSET :offset
             """,
-            (query, song_count, song_offset),
+            {"query": query, "limit": song_count, "offset": song_offset},
         ).fetchall()
 
     return {
