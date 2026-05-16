@@ -788,14 +788,23 @@ def upsert_album(
     row = get_conn().execute(
         """
         INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (:artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type, :created_at)
         ON CONFLICT(artist_id, name_lower) DO UPDATE SET
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
             release_type = COALESCE(excluded.release_type, albums.release_type)
         RETURNING id
         """,
-        (artist_id, name, name_lower, sort_name, year, genre, release_type, now),
+        {
+            "artist_id": artist_id,
+            "name": name,
+            "name_lower": name_lower,
+            "sort_name": sort_name,
+            "year": year,
+            "genre": genre,
+            "release_type": release_type,
+            "created_at": now,
+        },
     ).fetchone()
     return int(row["id"])
 
@@ -810,9 +819,9 @@ def get_album(album_id: int) -> Optional[Dict[str, Any]]:
                ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
-         WHERE al.id = ?
+         WHERE al.id = :id
         """,
-            (album_id,),
+            {"id": album_id},
         )
         .fetchone()
     )
@@ -842,16 +851,17 @@ def list_albums(
         libraries pre-compute a random sample table or use rowid sampling.
     """
     where_clauses: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"size": size, "offset": offset}
 
     if list_type == "byYear" and from_year is not None and to_year is not None:
         lo, hi = min(from_year, to_year), max(from_year, to_year)
-        where_clauses.append("al.year BETWEEN ? AND ?")
-        params.extend([lo, hi])
+        where_clauses.append("al.year BETWEEN :from_year AND :to_year")
+        params["from_year"] = lo
+        params["to_year"] = hi
 
     if list_type == "byGenre" and genre is not None:
-        where_clauses.append("al.genre = ? COLLATE NOCASE")
-        params.append(genre)
+        where_clauses.append("al.genre = :genre COLLATE NOCASE")
+        params["genre"] = genre
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -875,7 +885,7 @@ def list_albums(
          LEFT JOIN album_plays ap ON ap.aid = al.id
              {where_sql}
           ORDER BY COALESCE(ap.sort_key, 0) DESC
-             LIMIT ? OFFSET ?
+             LIMIT :size OFFSET :offset
         """
     else:
         order_clause = {
@@ -894,10 +904,10 @@ def list_albums(
               JOIN artists ar ON ar.id = al.artist_id
              {where_sql}
           ORDER BY {order_clause}
-             LIMIT ? OFFSET ?
+             LIMIT :size OFFSET :offset
         """
 
-    rows = get_conn().execute(sql, (*params, size, offset)).fetchall()
+    rows = get_conn().execute(sql, params).fetchall()
     return _rows_to_dicts(rows)
 
 
@@ -910,11 +920,11 @@ def update_album_aggregates(album_id: int) -> None:
     get_conn().execute(
         """
         UPDATE albums
-           SET track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?),
-               duration    = (SELECT COALESCE(SUM(duration), 0) FROM tracks WHERE album_id = ?)
-         WHERE id = ?
+           SET track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = :album_id),
+               duration    = (SELECT COALESCE(SUM(duration), 0) FROM tracks WHERE album_id = :album_id)
+         WHERE id = :album_id
         """,
-        (album_id, album_id, album_id),
+        {"album_id": album_id},
     )
 
 
@@ -923,17 +933,17 @@ def update_artist_aggregates(artist_id: int) -> None:
     get_conn().execute(
         """
         UPDATE artists
-           SET album_count = (SELECT COUNT(*) FROM albums WHERE artist_id = ?)
-         WHERE id = ?
+           SET album_count = (SELECT COUNT(*) FROM albums WHERE artist_id = :artist_id)
+         WHERE id = :artist_id
         """,
-        (artist_id, artist_id),
+        {"artist_id": artist_id},
     )
 
 
 def set_album_cover_art(album_id: int, cover_art_id: str) -> None:
     get_conn().execute(
-        "UPDATE albums SET cover_art_id = ? WHERE id = ?",
-        (cover_art_id, album_id),
+        "UPDATE albums SET cover_art_id = :cover_art_id WHERE id = :album_id",
+        {"cover_art_id": cover_art_id, "album_id": album_id},
     )
 
 
@@ -944,8 +954,8 @@ def set_artist_image(artist_id: int, image_id: str) -> None:
     cache dir so the same `getCoverArt` endpoint serves both kinds of image.
     """
     get_conn().execute(
-        "UPDATE artists SET image_id = ? WHERE id = ?",
-        (image_id, artist_id),
+        "UPDATE artists SET image_id = :image_id WHERE id = :artist_id",
+        {"image_id": image_id, "artist_id": artist_id},
     )
 
 
