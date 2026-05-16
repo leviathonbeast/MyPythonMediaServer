@@ -20,7 +20,7 @@ mutagen>=1.47.0
 Pillow>=10.0.0
 
 # ---- HTTP utilities ---------------------------------------------------------
-python-multipart>=0.0.6   # required by FastAPI for form uploads (future use)
+python-multipart>=0.0.20  # required by FastAPI for form uploads (future use)
 slowapi>=0.1.9
 
 # ---- Dev / optional ---------------------------------------------------------

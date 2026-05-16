@@ -626,6 +626,54 @@ def list_genre_count() -> List[Dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
+    """Tracks credited to this artist on an album NOT primarily by them.
+
+    The artist page already shows albums where this artist is the
+    album-artist (`list_artist_albums`). Lots of artists also appear as
+    track-artists on compilations, soundtracks, or guest verses — the
+    track has them as `tracks.artist_id`, but the album's `artist_id`
+    points elsewhere (often the Various-Artists sentinel). Without this
+    query those contributions are invisible.
+
+    Filter logic: `tracks.artist_id = ?` keeps only the artist's tracks;
+    `albums.artist_id != ?` drops everything already surfaced via the
+    albums-grouped section. The ordering puts newest first (matches the
+    artist-page album sections) and groups tracks by album so multi-track
+    appearances on the same comp render adjacent.
+
+    Returns rows in the shape `track_to_subsonic` expects, plus a couple
+    of extra fields the frontend can use for context ("appears on …").
+    """
+    rows = (
+        get_conn()
+        .execute(
+            """
+        SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
+               t.artist_id, ar.name AS artist_name,
+               t.album_id, al.name AS album_name, al.cover_art_id,
+               al.year AS album_year,
+               al.artist_id AS album_artist_id,
+               aa.name AS album_artist_name
+          FROM tracks  t
+          JOIN albums  al ON al.id = t.album_id
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN artists aa ON aa.id = al.artist_id
+         WHERE t.artist_id = ?
+           AND al.artist_id != ?
+      ORDER BY COALESCE(al.year, 0) DESC,
+               al.name COLLATE NOCASE,
+               t.disc_number,
+               t.track_number
+            """,
+            (artist_id, artist_id),
+        )
+        .fetchall()
+    )
+    return _rows_to_dicts(rows)
+
+
 def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
     """All albums by an artist, ordered by year then name."""
     rows = (

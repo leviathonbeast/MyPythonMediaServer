@@ -525,6 +525,15 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
             "coverArt":     a.get("cover_art_id"),
         })
 
+    # "Appearances": tracks credited to this artist on albums whose
+    # album-artist is someone else (compilations, guest features, etc.).
+    # Without this section the artist page is empty for anyone who only
+    # shows up via tracks.artist_id, never as albums.artist_id.
+    appearances = [
+        library_core.track_to_subsonic(t)
+        for t in queries.list_artist_appearances(internal_id)
+    ]
+
     bio = lastfm.get_artist_bio(artist["name"])
 
     # Artist photo resolution order:
@@ -559,6 +568,7 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
         "name":           artist["name"],
         "album_count":    artist.get("album_count"),
         "albums_grouped": grouped,
+        "appearances":    appearances,
         "bio":            bio.as_dict() if bio else None,
         # When set, this is the cached server-side URL (hits getCoverArt
         # and is immutably-cacheable). When the recovery sweep hasn't run
