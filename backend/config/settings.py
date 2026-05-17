@@ -46,11 +46,31 @@ class Settings(BaseSettings):
         description="Absolute paths to music libraries. Local or NAS mount points.",
     )
 
-    # Database file location. SQLite, single file, easy to back up. We keep
-    # everything (tracks, albums, artists, users, scan cache) in one DB.
+    # Database backend.
+    #
+    # database_url is the authoritative knob and supports two URL schemes:
+    #   sqlite:///./data/library.db    (default; relative path supported)
+    #   sqlite:////absolute/path.db    (note the four slashes for absolute)
+    #   postgresql://user:pass@host:port/dbname
+    #
+    # database_path is the LEGACY field and still works — if database_url is
+    # unset and database_path is provided, the loader synthesises a sqlite://
+    # URL from it. This means existing deployments don't need to touch their
+    # config when upgrading.
+    database_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Database URL. sqlite:///path/to/file.db or "
+            "postgresql://user:pass@host:port/dbname. Falls back to "
+            "database_path when unset."
+        ),
+    )
     database_path: str = Field(
         default="./data/library.db",
-        description="SQLite file path. Parent dir is created at startup.",
+        description=(
+            "Legacy SQLite file path. Ignored when database_url is set. "
+            "Parent dir is created at startup."
+        ),
     )
 
     # Cover art cache directory. Extracted artwork is written here as JPEG/PNG
@@ -230,6 +250,17 @@ class Settings(BaseSettings):
         """Expand ~ and resolve to absolute paths so downstream code never has to."""
         return [str(Path(p).expanduser().resolve()) for p in v]
 
+    def resolved_database_url(self) -> str:
+        """Return the effective database URL.
+
+        Prefers `database_url` when set; falls back to `database_path` and
+        synthesises a `sqlite://` URL from it. Lets old configs that only
+        set `database_path` keep working without modification.
+        """
+        if self.database_url:
+            return self.database_url
+        return f"sqlite:///{self.database_path}"
+
     @field_validator("audio_extensions")
     @classmethod
     def _normalize_extensions(cls, v: List[str]) -> List[str]:
@@ -283,6 +314,19 @@ def ensure_directories(settings: Settings) -> None:
 
     Called once at startup. Idempotent. Failing here means the user gave us a
     path we can't write to — fail loudly rather than later mid-request.
+
+    For Postgres URLs there's no filesystem path to create — that's the DB
+    server's problem. We only create the parent dir for `sqlite://` URLs.
     """
-    Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
+    url = settings.resolved_database_url()
+    if url.startswith("sqlite://"):
+        # Strip the scheme. SQLAlchemy-style sqlite:///./relative or
+        # sqlite:////absolute both work — slice off the 'sqlite://' and
+        # the remaining string is the path (possibly with a leading slash
+        # for absolute paths).
+        path = url[len("sqlite://"):]
+        if path.startswith("/") and not path.startswith("//"):
+            # sqlite:///./rel.db → "/./rel.db" → strip leading slash for relative
+            path = path[1:]
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.artwork_cache_dir).mkdir(parents=True, exist_ok=True)
