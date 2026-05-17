@@ -296,6 +296,27 @@ Tests use a per-test temporary SQLite DB — your real library is never
 touched. 225 tests covering permissions, user CRUD, playlist CRUD,
 FTS5, queries, starring, and Subsonic protocol compliance.
 
+**Postgres pass.** To also run the suite against Postgres (catches
+dialect divergence the SQLite pass can't), create a dedicated test
+database and set `PYTEST_POSTGRES_URL`:
+
+```bash
+sudo -u postgres psql -c "CREATE DATABASE muse_test OWNER muse;"
+PYTEST_POSTGRES_URL=postgresql://muse:password@localhost/muse_test \
+    pytest tests/ -v
+```
+
+**Warning:** every test wipes the target schema (`DROP SCHEMA public
+CASCADE`). Point at a throwaway database, never at production.
+
+The FTS5 test is skipped automatically on the Postgres pass (no
+virtual table on that backend; the equivalent is the tsvector trigger
+exercised implicitly by search3 tests).
+
+The Postgres pass takes a few seconds longer than SQLite because of
+per-test schema reset. `pytest -p no:xdist` is recommended — the
+shared test DB doesn't tolerate parallel workers.
+
 ### Maintenance
 
 GC runs automatically after every scan. To trigger manually:

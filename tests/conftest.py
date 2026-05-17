@@ -12,12 +12,35 @@ one up manually.
 
 Strategy
 --------
-Each test function gets an isolated SQLite database (tmp_path is a pytest
-built-in fixture that provides a temporary directory that is automatically
-deleted after the test). We:
+Each test function gets an isolated database. The dialect depends on the
+environment:
 
-  1. Patch the settings singleton to point at the temp DB instead of the real one.
-  2. Reset the thread-local DB connection so the next get_conn() connects to the temp DB.
+  * Default (no env var)               → SQLite in a per-test tmp directory.
+  * PYTEST_POSTGRES_URL set on env     → Postgres against that URL, with the
+                                          schema wiped (`DROP SCHEMA public
+                                          CASCADE; CREATE SCHEMA public;`)
+                                          and migrations re-run before each
+                                          test.
+
+POINT THE URL AT A DEDICATED TEST DATABASE — every test wipes the schema
+on the target, so pointing at prod would destroy your library. Suggested
+setup:
+
+    sudo -u postgres psql -c "CREATE DATABASE muse_test OWNER muse;"
+    PYTEST_POSTGRES_URL=postgresql://muse:password@localhost/muse_test pytest
+
+The Postgres pass adds ~100ms per test for the schema reset. With ~225
+tests that's roughly 20s on top of the SQLite pass — acceptable for a
+second dialect-coverage run.
+
+Parallel execution (pytest-xdist) is not supported for the Postgres pass:
+all workers would target the same database and stomp on each other. Run
+serially with `pytest -p no:xdist` or omit the env var for parallel work.
+
+Common to both dialects:
+
+  1. Patch the settings singleton to point at the test DB.
+  2. Reset the thread-local DB connection so get_conn() opens fresh.
   3. Run migrations — this creates the schema and seeds the bootstrap admin user.
   4. Create a second, non-admin user for permission tests.
   5. Yield a TestClient — an in-process HTTP client that talks to the real FastAPI app.
@@ -40,6 +63,7 @@ the same reason — slow hashing would make the test suite take minutes.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -54,13 +78,32 @@ from backend.db import queries
 
 
 # ---------------------------------------------------------------------------
+# Dialect selection
+# ---------------------------------------------------------------------------
+
+# Set PYTEST_POSTGRES_URL=postgresql://user:pass@host/dbname to run the suite
+# against Postgres. See module docstring for full setup notes — and please
+# point at a dedicated TEST database, not your production one.
+TEST_POSTGRES_URL: str | None = os.environ.get("PYTEST_POSTGRES_URL")
+
+
+def is_postgres_test_mode() -> bool:
+    """True if the suite is configured to run against Postgres."""
+    return TEST_POSTGRES_URL is not None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _make_settings(tmp_path) -> Settings:
-    """Minimal Settings pointing to an isolated temp database."""
-    return Settings(
-        database_path=str(tmp_path / "test.db"),
+    """Minimal Settings pointing to an isolated test database.
+
+    On SQLite we use a per-test file inside `tmp_path` so each test starts
+    clean automatically. On Postgres we share one database across the test
+    run; cleanup happens in `_wipe_postgres_schema` before each test.
+    """
+    kwargs = dict(
         artwork_cache_dir=str(tmp_path / "artwork"),
         jwt_secret="test-secret-key-for-pytest",
         jwt_algorithm="HS256",
@@ -71,6 +114,28 @@ def _make_settings(tmp_path) -> Settings:
         scan_on_startup=False,
         lastfm_api_key=None,
     )
+    if is_postgres_test_mode():
+        kwargs["database_url"] = TEST_POSTGRES_URL
+    else:
+        kwargs["database_path"] = str(tmp_path / "test.db")
+    return Settings(**kwargs)
+
+
+def _wipe_postgres_schema() -> None:
+    """Drop and recreate the public schema on the Postgres test DB.
+
+    Runs before each test so we get the same clean-slate guarantee SQLite
+    gets for free via per-test tmp directories. Uses a one-shot psycopg
+    connection (autocommit) outside of our connection registry so it's
+    independent of any test-thread state.
+    """
+    import psycopg
+
+    assert TEST_POSTGRES_URL is not None
+    with psycopg.connect(TEST_POSTGRES_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS public CASCADE;")
+            cur.execute("CREATE SCHEMA public;")
 
 
 def _fast_hash(password: str) -> str:
@@ -103,8 +168,15 @@ def client(tmp_path):
     _settings_mod._settings_instance = settings
 
     # Reset any existing thread-local connection so get_conn() opens a fresh
-    # connection to the temp database on first use within this test.
+    # connection to the test database on first use within this test.
     close_thread_connection()
+
+    # On the Postgres path we share one database across every test, so the
+    # rows from a previous test would still be there. Wipe the schema first
+    # so migrations re-run against a clean slate. On SQLite the per-test
+    # tmp_path already gives us that.
+    if is_postgres_test_mode():
+        _wipe_postgres_schema()
 
     # Init path + run migrations (seeds schema + admin user via migration_002).
     init_db(settings)
