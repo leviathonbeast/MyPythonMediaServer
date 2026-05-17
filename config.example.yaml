@@ -34,8 +34,28 @@ audio_extensions:
 
 # --- Storage --------------------------------------------------------------- #
 
-# Where to keep the SQLite database. Should be on a local disk (not over a
-# network mount) for both performance and corruption safety.
+# Database backend. Two URL schemes are supported:
+#
+#   sqlite:///path/to/file.db         — SQLite. Use ./relative or /absolute.
+#                                       Single file on disk, no server. Best
+#                                       for single-user installs; the default.
+#
+#   postgresql://user:pass@host:5432/dbname
+#                                     — Postgres 14 or newer. Required if you
+#                                       run multiple Muse instances against
+#                                       one database, or just prefer a
+#                                       client/server DB. The schema uses the
+#                                       `citext` extension; Muse creates it
+#                                       automatically on first run.
+#
+# When this is unset, the legacy `database_path` below is used (so existing
+# installs upgrade without config changes).
+# database_url: sqlite:///./data/muse.db
+# database_url: postgresql://muse:muse@localhost:5432/muse
+
+# Legacy SQLite-only setting. Ignored when database_url is set above.
+# Should be on a local disk (not over a network mount) for both performance
+# and corruption safety.
 database_path: ./data/muse.db
 
 # Where to cache extracted album artwork as image files.

@@ -6,7 +6,9 @@ services:
     ports:
       - "4040:4040"
     volumes:
-      # Persistent data: SQLite database and cached cover art / artist images.
+      # Persistent data: SQLite database (when used) and cached cover art /
+      # artist images. The Postgres profile below stores DB rows in a
+      # separate volume; this one still holds the artwork cache.
       - muse-data:/data
       # Your music library. Change the left side to wherever your files live.
       # The :ro suffix is recommended — Muse never writes to your music.
@@ -23,6 +25,12 @@ services:
       # Scan the library automatically on every container start.
       MUSE_SCAN_ON_STARTUP: "true"
 
+      # Database backend. Default is SQLite at /data/muse.db (covered by
+      # the muse-data volume above). To use the bundled Postgres service
+      # instead, uncomment the line below and bring the stack up with:
+      #   docker compose --profile postgres up -d
+      # MUSE_DATABASE_URL: postgresql://muse:${POSTGRES_PASSWORD}@postgres:5432/muse
+
       # Optional: Last.fm API key (used for artist bios). Without it the
       # artist page still works; it just shows no biography.
       # MUSE_LASTFM_API_KEY: ${MUSE_LASTFM_API_KEY}
@@ -35,6 +43,13 @@ services:
 
     restart: unless-stopped
 
+    # When using the Postgres profile, wait for it to be healthy before
+    # starting Muse so migrations don't race against the DB startup.
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
     # Honour the Dockerfile's healthcheck. We re-declare timing here so it
     # can be tuned without rebuilding the image. Once healthy, dependent
     # services (e.g. a reverse-proxy stack) can wait_for it cleanly.
@@ -45,5 +60,42 @@ services:
       start_period: 30s
       retries: 3
 
+  # Optional Postgres backend. Activate with:
+  #   docker compose --profile postgres up -d
+  # Default profile (no --profile flag) runs Muse against its bundled
+  # SQLite database and skips this service entirely.
+  postgres:
+    image: postgres:18-alpine
+    container_name: muse-postgres
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: muse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: muse
+    volumes:
+      - muse-postgres-data:/var/lib/postgresql/data
+    # Server tuning. Sized for a single-user music server on a small VM
+    # (~1 GiB RAM allotted to the DB). Adjust if you have more headroom
+    # or a multi-instance Muse deployment. Reference values picked with
+    # pgtune-style heuristics + the user's earlier preferences.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c maintenance_work_mem=64MB
+      -c work_mem=21845kB
+      -c max_connections=40
+      -c random_page_cost=1.1
+      -c synchronous_commit=off
+      -c wal_compression=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muse -d muse"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   muse-data:
+  muse-postgres-data:
