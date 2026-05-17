@@ -660,6 +660,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
                a.name,
                a.album_count                       AS album_count,
                COALESCE(a.sort_name, a.name)       AS sort_name,
+               a.musicbrainz_id                    AS musicbrainz_id,
                cv.cover_art_id                     AS cover_art_id
           FROM artists a
      LEFT JOIN (
@@ -688,6 +689,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
                 "name": row["name"],
                 "albumCount": row["album_count"],
                 "coverArtId": row["cover_art_id"],
+                "musicBrainzId": row["musicbrainz_id"],
             }
         )
     return indexed
@@ -697,7 +699,10 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, album_count FROM artists WHERE id = :id",
+            """
+            SELECT id, name, album_count, musicbrainz_id
+              FROM artists WHERE id = :id
+            """,
             {"id": artist_id},
         )
         .fetchone()
@@ -744,6 +749,7 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
             """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
+               t.musicbrainz_id,
                t.artist_id, ar.name AS artist_name,
                t.album_id, al.name AS album_name, al.cover_art_id,
                al.year AS album_year,
@@ -774,7 +780,8 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
         .execute(
             """
         SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
-               cover_art_id, created_at
+               cover_art_id, created_at,
+               musicbrainz_id, musicbrainz_releasegroup_id
           FROM albums
          WHERE artist_id = :artist_id
       ORDER BY year, name COLLATE NOCASE
@@ -855,6 +862,7 @@ def get_album(album_id: int) -> Optional[Dict[str, Any]]:
             """
         SELECT al.id, al.name, al.year, al.genre, al.release_type, al.track_count,
                al.duration, al.cover_art_id, al.created_at, al.artist_id,
+               al.musicbrainz_id, al.musicbrainz_releasegroup_id,
                ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
@@ -918,7 +926,9 @@ def list_albums(
               GROUP BY t.album_id
             )
             SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
-                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+                   al.cover_art_id, al.created_at, al.artist_id,
+                   al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+                   ar.name AS artist_name
               FROM albums al
               JOIN artists ar ON ar.id = al.artist_id
          LEFT JOIN album_plays ap ON ap.aid = al.id
@@ -938,7 +948,9 @@ def list_albums(
 
         sql = f"""
             SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
-                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+                   al.cover_art_id, al.created_at, al.artist_id,
+                   al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+                   ar.name AS artist_name
               FROM albums al
               JOIN artists ar ON ar.id = al.artist_id
              {where_sql}
@@ -1313,7 +1325,7 @@ def search3(
 
     artists = conn.execute(
         """
-        SELECT id, name, album_count
+        SELECT id, name, album_count, musicbrainz_id
           FROM artists
          WHERE name LIKE :pattern COLLATE NOCASE
          LIMIT :limit OFFSET :offset
@@ -1324,7 +1336,8 @@ def search3(
     albums = conn.execute(
         """
         SELECT al.id, al.name, al.year, al.cover_art_id, al.track_count, al.duration,
-               al.artist_id, ar.name AS artist_name
+               al.artist_id, al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+               ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
          WHERE al.name LIKE :pattern COLLATE NOCASE
@@ -1339,6 +1352,7 @@ def search3(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
                    t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
                    t.album_id, al.name AS album_name, al.cover_art_id
               FROM tracks t
@@ -1353,6 +1367,7 @@ def search3(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
                    t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
                    t.album_id, al.name AS album_name, al.cover_art_id
               FROM tracks t
