@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, List, Tuple
 
 from backend.config import get_settings
-from .connection import get_conn
+from .connection import DIALECT_POSTGRES, get_conn, get_dialect
 
 # Each migration is (version, callable). Callable receives a connection and
 # does whatever it needs. Versions must be monotonically increasing.
@@ -39,15 +39,19 @@ Migration = Tuple[int, Callable[[sqlite3.Connection], None]]
 def _migration_001_initial(conn: sqlite3.Connection) -> None:
     """Create the entire current schema from the per-dialect schema file.
 
-    The file is `schema.sql` for SQLite. When the Postgres path is wired
-    up this function will pick `schema.postgres.sql` based on the
-    configured dialect.
+    `schema.sql` for SQLite, `schema.postgres.sql` for Postgres. Both
+    contain the full current schema squashed from the original
+    migration sequence.
+
+    The `_PgConnection` wrapper exposes `executescript()` so this call
+    works identically on both backends.
     """
-    schema_path = Path(__file__).parent / "schema.sql"
+    if get_dialect() == DIALECT_POSTGRES:
+        schema_name = "schema.postgres.sql"
+    else:
+        schema_name = "schema.sql"
+    schema_path = Path(__file__).parent / schema_name
     sql = schema_path.read_text(encoding="utf-8")
-    # SQLite's executescript runs multiple `;`-separated statements in one
-    # call. psycopg3's execute() can do the same when params are None, so
-    # the dialect-aware version of this function will be a one-line branch.
     conn.executescript(sql)
 
 
@@ -64,8 +68,8 @@ def _migration_002_seed_admin(conn: sqlite3.Connection) -> None:
     from backend.core.auth import hash_password
 
     settings = get_settings()
-    cur = conn.execute("SELECT COUNT(*) FROM users")
-    if cur.fetchone()[0] > 0:
+    cur = conn.execute("SELECT COUNT(*) AS n FROM users")
+    if cur.fetchone()["n"] > 0:
         return  # already seeded — never touch existing users
 
     now = int(time.time())
@@ -120,14 +124,29 @@ MIGRATIONS: List[Migration] = [
 def _current_version(conn: sqlite3.Connection) -> int:
     """Return the highest applied migration version, or 0 if none."""
     # schema_version is created by migration 1, so we have to check whether
-    # the table exists at all before querying it.
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-    )
+    # the table exists at all before querying it. The two dialects expose
+    # their table catalogues differently:
+    #   * SQLite: SELECT name FROM sqlite_master WHERE type='table' ...
+    #   * Postgres: SELECT FROM pg_catalog.pg_class / information_schema
+    # `information_schema.tables` is the standard cross-dialect option and
+    # is supported by both — but SQLite implements only a subset, so we
+    # keep the dialect branch for clarity.
+    if get_dialect() == DIALECT_POSTGRES:
+        cur = conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'schema_version'"
+        )
+    else:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_version'"
+        )
     if cur.fetchone() is None:
         return 0
-    cur = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
-    return int(cur.fetchone()[0])
+    cur = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) AS v FROM schema_version"
+    )
+    return int(cur.fetchone()["v"])
 
 
 def run_migrations() -> None:

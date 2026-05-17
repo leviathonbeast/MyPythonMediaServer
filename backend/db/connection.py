@@ -160,10 +160,28 @@ def _new_sqlite_connection(cache_pages: int) -> sqlite3.Connection:
 # regex will need a negative-lookbehind for the preceding `:`.
 _NAMED_PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
 
+# ` COLLATE NOCASE` strip. SQLite uses this clause everywhere a case-
+# insensitive comparison or sort is needed; Postgres has no such collation
+# (it would be spelled differently), but our Postgres schema uses CITEXT
+# for the same columns, which makes the clause redundant. Strip it before
+# psycopg sees the SQL.
+_COLLATE_NOCASE_RE = re.compile(r"\s+COLLATE\s+NOCASE\b", re.IGNORECASE)
+
 
 def _translate_named_params(sql: str) -> str:
     """Translate SQLite-style `:name` placeholders to psycopg `%(name)s`."""
     return _NAMED_PARAM_RE.sub(r"%(\1)s", sql)
+
+
+def _strip_sqlite_isms(sql: str) -> str:
+    """Remove SQLite-specific syntax that Postgres handles differently.
+
+    Currently just `COLLATE NOCASE` — the Postgres schema uses CITEXT
+    columns for the same effect, so the clause is dead weight after we
+    swap dialects. Applied alongside parameter-style translation in
+    `_PgConnection.execute()`/`executemany()`/`executescript()`.
+    """
+    return _COLLATE_NOCASE_RE.sub("", sql)
 
 
 class _PgConnection:
@@ -185,16 +203,40 @@ class _PgConnection:
         self._raw = raw
 
     def execute(self, sql: str, params: Optional[Any] = None) -> Any:
-        sql = _translate_named_params(sql)
+        sql = _strip_sqlite_isms(_translate_named_params(sql))
         if params is None:
             return self._raw.execute(sql)
         return self._raw.execute(sql, params)
 
     def executemany(self, sql: str, params_seq: Iterable[Any]) -> Any:
-        sql = _translate_named_params(sql)
+        sql = _strip_sqlite_isms(_translate_named_params(sql))
         cur = self._raw.cursor()
         cur.executemany(sql, params_seq)
         return cur
+
+    def executescript(self, sql: str) -> None:
+        """
+        Mimic sqlite3.Connection.executescript: run a multi-statement SQL
+        blob in a single call. Used by `_migration_001_initial` to apply
+        the schema file.
+
+        psycopg3's simple-protocol path handles multi-statement scripts
+        when no params are passed, so we run the whole blob in one call.
+        We deliberately do NOT split on `;` — the Postgres schema uses
+        `$$ ... $$` dollar-quoted function bodies that contain semicolons,
+        and naive splitting would break them.
+
+        SQLite-specific `COLLATE NOCASE` isn't expected to appear in the
+        Postgres schema file, but the strip is harmless if it does. Named
+        parameters are also unused in schema-load context; the translation
+        is a no-op there.
+        """
+        sql = _strip_sqlite_isms(_translate_named_params(sql))
+        cur = self._raw.cursor()
+        try:
+            cur.execute(sql)
+        finally:
+            cur.close()
 
     def commit(self) -> None:
         self._raw.commit()
