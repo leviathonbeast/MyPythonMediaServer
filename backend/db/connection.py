@@ -155,10 +155,11 @@ def _new_sqlite_connection(cache_pages: int) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 # `:name` → `%(name)s`. Matches names that start with an alpha or underscore
-# and continue with word chars. Doesn't try to dodge `::cast` casts because
-# our codebase doesn't use them; if we ever add Postgres-specific casts, the
-# regex will need a negative-lookbehind for the preceding `:`.
-_NAMED_PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
+# and continue with word chars. The `(?<!:)` lookbehind skips the second
+# colon in Postgres `::cast` casts (e.g. `NEW.title::TEXT`) — without it the
+# translator would rewrite `::TEXT` to `:%(TEXT)s` and corrupt the SQL.
+# Casts appear in schema.postgres.sql's tsvector trigger.
+_NAMED_PARAM_RE = re.compile(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)")
 
 # ` COLLATE NOCASE` strip. SQLite uses this clause everywhere a case-
 # insensitive comparison or sort is needed; Postgres has no such collation
