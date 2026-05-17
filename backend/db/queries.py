@@ -602,27 +602,39 @@ def save_play_queue(
 # ---------------------------------------------------------------------------
 
 
-def upsert_artist(name: str, sort_name: Optional[str] = None) -> int:
+def upsert_artist(
+    name: str,
+    sort_name: Optional[str] = None,
+    musicbrainz_id: Optional[str] = None,
+) -> int:
     """Insert artist if missing, return id.
 
     Used by the scanner. Lower-case dedup key means "AC/DC" and "ac/dc" merge.
 
     Performance: SQLite 3.35+ RETURNING lets us collapse the previous
-    INSERT-then-SELECT into one round trip. The `DO UPDATE SET name_lower
-    = name_lower` is a no-op upsert — required because DO NOTHING skips
-    RETURNING, while DO UPDATE always returns the row whether it was
-    inserted or already there.
+    INSERT-then-SELECT into one round trip.
+
+    `musicbrainz_id` (if provided) is filled in on first insert and on any
+    subsequent scan where the existing row's MBID is NULL. We don't
+    overwrite an existing non-null value — once Picard has stamped an
+    artist row, a later untagged file shouldn't blank it out.
     """
     name_lower = name.strip().lower()
     sort_name = sort_name or name
     row = get_conn().execute(
         """
-        INSERT INTO artists (name, name_lower, sort_name)
-        VALUES (:name, :name_lower, :sort_name)
-        ON CONFLICT(name_lower) DO UPDATE SET name_lower = artists.name_lower
+        INSERT INTO artists (name, name_lower, sort_name, musicbrainz_id)
+        VALUES (:name, :name_lower, :sort_name, :musicbrainz_id)
+        ON CONFLICT(name_lower) DO UPDATE SET
+            musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
         RETURNING id
         """,
-        {"name": name, "name_lower": name_lower, "sort_name": sort_name},
+        {
+            "name": name,
+            "name_lower": name_lower,
+            "sort_name": sort_name,
+            "musicbrainz_id": musicbrainz_id,
+        },
     ).fetchone()
     return int(row["id"])
 
@@ -785,30 +797,39 @@ def upsert_album(
     year: Optional[int] = None,
     genre: Optional[str] = None,
     release_type: Optional[str] = None,
+    musicbrainz_id: Optional[str] = None,
+    musicbrainz_releasegroup_id: Optional[str] = None,
 ) -> int:
     """Insert album if missing, return id.
 
     `release_type` follows MusicBrainz primary types ("album", "ep",
     "single", "compilation", "live", ...). NULL means "not tagged" and
     is treated as "album" for grouping purposes by the artist page.
-    We use COALESCE on update so a later track that DOES have the tag
-    populates an album initially seeded from a tag-less file.
+
+    The COALESCEs in DO UPDATE preserve existing values when the new row
+    has NULLs, so a tag-less file followed by a tagged one fills in
+    year/genre/release_type/MBIDs instead of clobbering them.
     """
     name_lower = name.strip().lower()
     sort_name = normalize_sort_name(name)
     now = int(time.time())
-    # RETURNING collapses INSERT-then-SELECT into one round trip. The
-    # COALESCEs in DO UPDATE preserve existing values when the new row
-    # has NULLs, so a tag-less file followed by a tagged one fills in
-    # year/genre/release_type instead of clobbering them.
     row = get_conn().execute(
         """
-        INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
-        VALUES (:artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type, :created_at)
+        INSERT INTO albums (
+            artist_id, name, name_lower, sort_name, year, genre, release_type,
+            created_at, musicbrainz_id, musicbrainz_releasegroup_id
+        )
+        VALUES (
+            :artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type,
+            :created_at, :musicbrainz_id, :musicbrainz_releasegroup_id
+        )
         ON CONFLICT(artist_id, name_lower) DO UPDATE SET
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
-            release_type = COALESCE(excluded.release_type, albums.release_type)
+            release_type = COALESCE(excluded.release_type, albums.release_type),
+            musicbrainz_id = COALESCE(albums.musicbrainz_id, excluded.musicbrainz_id),
+            musicbrainz_releasegroup_id =
+                COALESCE(albums.musicbrainz_releasegroup_id, excluded.musicbrainz_releasegroup_id)
         RETURNING id
         """,
         {
@@ -820,6 +841,8 @@ def upsert_album(
             "genre": genre,
             "release_type": release_type,
             "created_at": now,
+            "musicbrainz_id": musicbrainz_id,
+            "musicbrainz_releasegroup_id": musicbrainz_releasegroup_id,
         },
     ).fetchone()
     return int(row["id"])
@@ -1101,18 +1124,22 @@ def upsert_track(track: Dict[str, Any]) -> int:
     Saves one query per track during scans — on a 100k-track library that's
     100k fewer SELECTs.
     """
+    # Ensure musicbrainz_id is always present in the params dict — sqlite3
+    # raises ProgrammingError on a missing named placeholder.
+    track = {**track}
+    track.setdefault("musicbrainz_id", None)
     row = get_conn().execute(
         """
         INSERT INTO tracks (
             album_id, artist_id, music_folder_id, path, title,
             track_number, disc_number, duration, bitrate, size,
             suffix, content_type, year, genre,
-            mtime, content_hash, last_scanned
+            mtime, content_hash, last_scanned, musicbrainz_id
         ) VALUES (
             :album_id, :artist_id, :music_folder_id, :path, :title,
             :track_number, :disc_number, :duration, :bitrate, :size,
             :suffix, :content_type, :year, :genre,
-            :mtime, :content_hash, :last_scanned
+            :mtime, :content_hash, :last_scanned, :musicbrainz_id
         )
         ON CONFLICT(path) DO UPDATE SET
             album_id     = excluded.album_id,
@@ -1129,7 +1156,11 @@ def upsert_track(track: Dict[str, Any]) -> int:
             genre        = excluded.genre,
             mtime        = excluded.mtime,
             content_hash = excluded.content_hash,
-            last_scanned = excluded.last_scanned
+            last_scanned = excluded.last_scanned,
+            -- Preserve an existing track MBID if the incoming tags don't have
+            -- one (e.g. Picard tagged the file once, later untagged copy got
+            -- written over it). Symmetric with the album/artist behaviour.
+            musicbrainz_id = COALESCE(tracks.musicbrainz_id, excluded.musicbrainz_id)
         RETURNING id
         """,
         track,
