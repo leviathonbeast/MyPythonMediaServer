@@ -103,20 +103,18 @@ def get_indexes() -> Dict[str, Any]:
     grouped = queries.list_artists_indexed()
     indexes = []
     for letter in sorted(grouped.keys()):
-        indexes.append(
-            {
-                "name": letter,
-                "artist": [
-                    {
-                        "id": make_artist_id(a["id"]),
-                        "name": a["name"],
-                        "albumCount": a["albumCount"],
-                        "coverArt": a.get("coverArtId"),
-                    }
-                    for a in grouped[letter]
-                ],
+        artist_entries = []
+        for a in grouped[letter]:
+            entry: Dict[str, Any] = {
+                "id": make_artist_id(a["id"]),
+                "name": a["name"],
+                "albumCount": a["albumCount"],
+                "coverArt": a.get("coverArtId"),
             }
-        )
+            if a.get("musicBrainzId"):
+                entry["musicBrainzId"] = a["musicBrainzId"]
+            artist_entries.append(entry)
+        indexes.append({"name": letter, "artist": artist_entries})
     return {"index": indexes}
 
 
@@ -133,11 +131,14 @@ def get_music_directory(directory_id: str) -> Optional[Dict[str, Any]]:
         if not artist:
             return None
         albums = queries.list_artist_albums(rid)
-        return {
+        out: Dict[str, Any] = {
             "id": make_artist_id(rid),
             "name": artist["name"],
             "child": [_album_to_directory_child(a, artist["name"]) for a in albums],
         }
+        if artist.get("musicbrainz_id"):
+            out["musicBrainzId"] = artist["musicbrainz_id"]
+        return out
     if kind == "album":
         album = queries.get_album(rid)
         if not album:
@@ -156,7 +157,7 @@ def _album_to_directory_child(
     album: Dict[str, Any], artist_name: str
 ) -> Dict[str, Any]:
     """Render an album as a directory child (the Subsonic dirty-trick view)."""
-    return {
+    out = {
         "id": make_album_id(album["id"]),
         "artistId": (
             make_artist_id(album.get("artist_id", 0))
@@ -178,6 +179,11 @@ def _album_to_directory_child(
         "playCount": 0,  # NYI
         "created": _epoch_to_iso(album.get("created_at")),
     }
+    # Optional MBIDs — only emit keys when populated so clients don't see
+    # null values for libraries that aren't MB-tagged.
+    if album.get("musicbrainz_id"):
+        out["musicBrainzId"] = album["musicbrainz_id"]
+    return out
 
 
 def list_albums(
@@ -241,10 +247,10 @@ def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
 
     Includes all Subsonic 1.16.1 required fields plus the OpenSubsonic
     extensions (mediaType, genres, artists, albumArtists, displayArtist,
-    displayAlbumArtist) where we have the data. Fields the scanner doesn't
-    yet populate (bitDepth, samplingRate, channelCount, replayGain, bpm,
-    comment, musicBrainzId, contributors, moods) are omitted rather than
-    sent as null, keeping the payload compact and clients happy.
+    displayAlbumArtist, musicBrainzId) where we have the data. Fields the
+    scanner doesn't yet populate (bitDepth, samplingRate, channelCount,
+    replayGain, bpm, comment, contributors, moods) are omitted rather
+    than sent as null, keeping the payload compact and clients happy.
     """
     artist_id_str = make_artist_id(t["artist_id"]) if t.get("artist_id") else None
     album_id_str = make_album_id(t["album_id"]) if t.get("album_id") else None
@@ -276,6 +282,12 @@ def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
         # OpenSubsonic extensions
         "mediaType": "song",
     }
+
+    # MusicBrainz recording id (track-level). Only emit when populated so
+    # the field isn't sent as null on libraries that aren't MB-tagged.
+    mb_id = t.get("musicbrainz_id")
+    if mb_id:
+        out["musicBrainzId"] = mb_id
 
     # Multi-value genre array (OpenSubsonic)
     if genre:

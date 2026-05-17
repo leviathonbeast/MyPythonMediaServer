@@ -11,6 +11,12 @@ PyYAML>=6.0
 bcrypt==5.0.0
 python-jose[cryptography]==3.5.0
 
+# ---- Database ---------------------------------------------------------------
+# sqlite3 ships with the Python stdlib — no entry here. psycopg3 is the
+# Postgres driver and ConnectionPool, used when database_url is set to a
+# postgresql:// URL. [binary] avoids needing libpq-dev at install time.
+psycopg[binary,pool]>=3.1.0
+
 # ---- Audio metadata ---------------------------------------------------------
 mutagen==1.47.0
 

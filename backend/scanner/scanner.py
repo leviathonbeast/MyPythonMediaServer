@@ -532,18 +532,25 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                 track_artist_name = rec["_artist"]
                 album_artist_name = rec["_album_artist"] or track_artist_name
 
-                track_artist_id = queries.upsert_artist(track_artist_name)
-                album_artist_id = (
-                    track_artist_id
-                    if album_artist_name == track_artist_name
-                    else queries.upsert_artist(album_artist_name)
+                track_artist_id = queries.upsert_artist(
+                    track_artist_name,
+                    musicbrainz_id=rec.get("_mb_artist_id"),
                 )
+                if album_artist_name == track_artist_name:
+                    album_artist_id = track_artist_id
+                else:
+                    album_artist_id = queries.upsert_artist(
+                        album_artist_name,
+                        musicbrainz_id=rec.get("_mb_albumartist_id"),
+                    )
                 album_id = queries.upsert_album(
                     artist_id=album_artist_id,
                     name=rec["_album"],
                     year=rec.get("year"),
                     genre=rec.get("genre"),
                     release_type=rec.get("_release_type"),
+                    musicbrainz_id=rec.get("_mb_album_id"),
+                    musicbrainz_releasegroup_id=rec.get("_mb_releasegroup_id"),
                 )
 
                 track_row = {
@@ -564,6 +571,7 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                     "mtime":           rec["mtime"],
                     "content_hash":    None,  # populated by a future enrichment pass
                     "last_scanned":    int(time.time()),
+                    "musicbrainz_id":  rec.get("_mb_track_id"),
                 }
                 queries.upsert_track(track_row)
 
@@ -720,4 +728,11 @@ def _parse_one(path: str, st, folder_id: int) -> Dict[str, Any]:
         "content_type": metadata.get_content_type(suffix),
         # Pre-stored on disk by the worker; _commit just stamps the hash.
         "art_id":       art_id,
+        # MBIDs — _commit threads these through the relevant upsert helpers.
+        # Underscored to distinguish them from columns persisted directly.
+        "_mb_track_id":       meta.musicbrainz_track_id,
+        "_mb_album_id":       meta.musicbrainz_album_id,
+        "_mb_releasegroup_id": meta.musicbrainz_releasegroup_id,
+        "_mb_artist_id":      meta.musicbrainz_artist_id,
+        "_mb_albumartist_id": meta.musicbrainz_albumartist_id,
     }

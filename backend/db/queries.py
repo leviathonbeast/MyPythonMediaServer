@@ -26,7 +26,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .connection import get_conn
+from .connection import DIALECT_POSTGRES, get_conn, get_dialect
 
 
 _LEADING_ARTICLE_RE = re.compile(r'^(the|a|an)\s+', re.IGNORECASE)
@@ -66,10 +66,13 @@ def _rows_to_dicts(rows) -> List[Dict[str, Any]]:
 
 
 def star_item(user_id: int, target_type: str, target_id: int) -> None:
+    # ON CONFLICT DO NOTHING is the portable form of INSERT OR IGNORE.
+    # Both SQLite (>= 3.24) and Postgres support it identically.
     get_conn().execute(
         """
-        INSERT OR IGNORE INTO starred (user_id, target_type, target_id, starred_at)
+        INSERT INTO starred (user_id, target_type, target_id, starred_at)
         VALUES (:user_id, :target_type, :target_id, :starred_at)
+        ON CONFLICT (user_id, target_type, target_id) DO NOTHING
         """,
         {
             "user_id": user_id,
@@ -209,13 +212,16 @@ def add_music_folder(name: str, path: str) -> int:
 
     Caller is expected to validate `path` (existence, readability) before
     calling — this layer just enforces the UNIQUE constraint on path,
-    raising sqlite3.IntegrityError on duplicates.
+    raising IntegrityError on duplicates.
+
+    Uses RETURNING instead of lastrowid so it works on Postgres too;
+    psycopg cursors don't expose a lastrowid attribute.
     """
-    cur = get_conn().execute(
-        "INSERT INTO music_folders (name, path) VALUES (:name, :path)",
+    row = get_conn().execute(
+        "INSERT INTO music_folders (name, path) VALUES (:name, :path) RETURNING id",
         {"name": name, "path": path},
-    )
-    return cur.lastrowid
+    ).fetchone()
+    return int(row["id"])
 
 
 def delete_music_folder(folder_id: int) -> bool:
@@ -347,14 +353,16 @@ def create_playlist(name: str, owner_id: int, track_ids: List[int]) -> int:
     """Insert playlist + tracks, return new id."""
     now = int(time.time())
     conn = get_conn()
-    cur = conn.execute(
+    # RETURNING instead of lastrowid — works on both sqlite3 and psycopg.
+    row = conn.execute(
         """
         INSERT INTO playlists (owner_id, name, created_at, updated_at)
         VALUES (:owner_id, :name, :created_at, :updated_at)
+        RETURNING id
         """,
         {"owner_id": owner_id, "name": name, "created_at": now, "updated_at": now},
-    )
-    playlist_id = cur.lastrowid
+    ).fetchone()
+    playlist_id = int(row["id"])
 
     if track_ids:
         conn.executemany(
@@ -417,12 +425,13 @@ def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> None:
     conn = get_conn()
     row = conn.execute(
         """
-        SELECT COALESCE(MAX(position), -1) FROM playlist_tracks
+        SELECT COALESCE(MAX(position), -1) AS max_position
+          FROM playlist_tracks
          WHERE playlist_id = :playlist_id
         """,
         {"playlist_id": playlist_id},
     ).fetchone()
-    next_pos = row[0] + 1
+    next_pos = row["max_position"] + 1
 
     conn.executemany(
         """
@@ -548,17 +557,25 @@ def save_play_queue(
 ) -> None:
     """Replace this user's saved queue with a new one."""
     conn = get_conn()
-    # Wipe the old ordered list. The header row in play_queues is overwritten
-    # below via INSERT OR REPLACE, so we don't need to delete it explicitly.
+    # Wipe the old ordered list. The header row in play_queues is upserted
+    # below, so we don't need to delete it explicitly.
     conn.execute(
         "DELETE FROM play_queue_entries WHERE user_id = :user_id",
         {"user_id": user_id},
     )
+    # INSERT ... ON CONFLICT DO UPDATE is the portable form of
+    # INSERT OR REPLACE. Replaces all the columns of the conflicting row
+    # with the new values; only the user_id (the PK) stays.
     conn.execute(
         """
-        INSERT OR REPLACE INTO play_queues
+        INSERT INTO play_queues
             (user_id, current_id, position_ms, changed_at, changed_by)
         VALUES (:user_id, :current_id, :position_ms, :changed_at, :changed_by)
+        ON CONFLICT (user_id) DO UPDATE SET
+            current_id  = excluded.current_id,
+            position_ms = excluded.position_ms,
+            changed_at  = excluded.changed_at,
+            changed_by  = excluded.changed_by
         """,
         {
             "user_id": user_id,
@@ -586,27 +603,39 @@ def save_play_queue(
 # ---------------------------------------------------------------------------
 
 
-def upsert_artist(name: str, sort_name: Optional[str] = None) -> int:
+def upsert_artist(
+    name: str,
+    sort_name: Optional[str] = None,
+    musicbrainz_id: Optional[str] = None,
+) -> int:
     """Insert artist if missing, return id.
 
     Used by the scanner. Lower-case dedup key means "AC/DC" and "ac/dc" merge.
 
     Performance: SQLite 3.35+ RETURNING lets us collapse the previous
-    INSERT-then-SELECT into one round trip. The `DO UPDATE SET name_lower
-    = name_lower` is a no-op upsert — required because DO NOTHING skips
-    RETURNING, while DO UPDATE always returns the row whether it was
-    inserted or already there.
+    INSERT-then-SELECT into one round trip.
+
+    `musicbrainz_id` (if provided) is filled in on first insert and on any
+    subsequent scan where the existing row's MBID is NULL. We don't
+    overwrite an existing non-null value — once Picard has stamped an
+    artist row, a later untagged file shouldn't blank it out.
     """
     name_lower = name.strip().lower()
     sort_name = sort_name or name
     row = get_conn().execute(
         """
-        INSERT INTO artists (name, name_lower, sort_name)
-        VALUES (:name, :name_lower, :sort_name)
-        ON CONFLICT(name_lower) DO UPDATE SET name_lower = artists.name_lower
+        INSERT INTO artists (name, name_lower, sort_name, musicbrainz_id)
+        VALUES (:name, :name_lower, :sort_name, :musicbrainz_id)
+        ON CONFLICT(name_lower) DO UPDATE SET
+            musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
         RETURNING id
         """,
-        {"name": name, "name_lower": name_lower, "sort_name": sort_name},
+        {
+            "name": name,
+            "name_lower": name_lower,
+            "sort_name": sort_name,
+            "musicbrainz_id": musicbrainz_id,
+        },
     ).fetchone()
     return int(row["id"])
 
@@ -632,6 +661,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
                a.name,
                a.album_count                       AS album_count,
                COALESCE(a.sort_name, a.name)       AS sort_name,
+               a.musicbrainz_id                    AS musicbrainz_id,
                cv.cover_art_id                     AS cover_art_id
           FROM artists a
      LEFT JOIN (
@@ -660,6 +690,7 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
                 "name": row["name"],
                 "albumCount": row["album_count"],
                 "coverArtId": row["cover_art_id"],
+                "musicBrainzId": row["musicbrainz_id"],
             }
         )
     return indexed
@@ -669,7 +700,10 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, album_count FROM artists WHERE id = :id",
+            """
+            SELECT id, name, album_count, musicbrainz_id
+              FROM artists WHERE id = :id
+            """,
             {"id": artist_id},
         )
         .fetchone()
@@ -716,6 +750,7 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
             """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
+               t.musicbrainz_id,
                t.artist_id, ar.name AS artist_name,
                t.album_id, al.name AS album_name, al.cover_art_id,
                al.year AS album_year,
@@ -746,7 +781,8 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
         .execute(
             """
         SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
-               cover_art_id, created_at
+               cover_art_id, created_at,
+               musicbrainz_id, musicbrainz_releasegroup_id
           FROM albums
          WHERE artist_id = :artist_id
       ORDER BY year, name COLLATE NOCASE
@@ -769,30 +805,39 @@ def upsert_album(
     year: Optional[int] = None,
     genre: Optional[str] = None,
     release_type: Optional[str] = None,
+    musicbrainz_id: Optional[str] = None,
+    musicbrainz_releasegroup_id: Optional[str] = None,
 ) -> int:
     """Insert album if missing, return id.
 
     `release_type` follows MusicBrainz primary types ("album", "ep",
     "single", "compilation", "live", ...). NULL means "not tagged" and
     is treated as "album" for grouping purposes by the artist page.
-    We use COALESCE on update so a later track that DOES have the tag
-    populates an album initially seeded from a tag-less file.
+
+    The COALESCEs in DO UPDATE preserve existing values when the new row
+    has NULLs, so a tag-less file followed by a tagged one fills in
+    year/genre/release_type/MBIDs instead of clobbering them.
     """
     name_lower = name.strip().lower()
     sort_name = normalize_sort_name(name)
     now = int(time.time())
-    # RETURNING collapses INSERT-then-SELECT into one round trip. The
-    # COALESCEs in DO UPDATE preserve existing values when the new row
-    # has NULLs, so a tag-less file followed by a tagged one fills in
-    # year/genre/release_type instead of clobbering them.
     row = get_conn().execute(
         """
-        INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
-        VALUES (:artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type, :created_at)
+        INSERT INTO albums (
+            artist_id, name, name_lower, sort_name, year, genre, release_type,
+            created_at, musicbrainz_id, musicbrainz_releasegroup_id
+        )
+        VALUES (
+            :artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type,
+            :created_at, :musicbrainz_id, :musicbrainz_releasegroup_id
+        )
         ON CONFLICT(artist_id, name_lower) DO UPDATE SET
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
-            release_type = COALESCE(excluded.release_type, albums.release_type)
+            release_type = COALESCE(excluded.release_type, albums.release_type),
+            musicbrainz_id = COALESCE(albums.musicbrainz_id, excluded.musicbrainz_id),
+            musicbrainz_releasegroup_id =
+                COALESCE(albums.musicbrainz_releasegroup_id, excluded.musicbrainz_releasegroup_id)
         RETURNING id
         """,
         {
@@ -804,6 +849,8 @@ def upsert_album(
             "genre": genre,
             "release_type": release_type,
             "created_at": now,
+            "musicbrainz_id": musicbrainz_id,
+            "musicbrainz_releasegroup_id": musicbrainz_releasegroup_id,
         },
     ).fetchone()
     return int(row["id"])
@@ -816,6 +863,7 @@ def get_album(album_id: int) -> Optional[Dict[str, Any]]:
             """
         SELECT al.id, al.name, al.year, al.genre, al.release_type, al.track_count,
                al.duration, al.cover_art_id, al.created_at, al.artist_id,
+               al.musicbrainz_id, al.musicbrainz_releasegroup_id,
                ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
@@ -879,7 +927,9 @@ def list_albums(
               GROUP BY t.album_id
             )
             SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
-                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+                   al.cover_art_id, al.created_at, al.artist_id,
+                   al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+                   ar.name AS artist_name
               FROM albums al
               JOIN artists ar ON ar.id = al.artist_id
          LEFT JOIN album_plays ap ON ap.aid = al.id
@@ -899,7 +949,9 @@ def list_albums(
 
         sql = f"""
             SELECT al.id, al.name, al.year, al.genre, al.track_count, al.duration,
-                   al.cover_art_id, al.created_at, al.artist_id, ar.name AS artist_name
+                   al.cover_art_id, al.created_at, al.artist_id,
+                   al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+                   ar.name AS artist_name
               FROM albums al
               JOIN artists ar ON ar.id = al.artist_id
              {where_sql}
@@ -1085,18 +1137,22 @@ def upsert_track(track: Dict[str, Any]) -> int:
     Saves one query per track during scans — on a 100k-track library that's
     100k fewer SELECTs.
     """
+    # Ensure musicbrainz_id is always present in the params dict — sqlite3
+    # raises ProgrammingError on a missing named placeholder.
+    track = {**track}
+    track.setdefault("musicbrainz_id", None)
     row = get_conn().execute(
         """
         INSERT INTO tracks (
             album_id, artist_id, music_folder_id, path, title,
             track_number, disc_number, duration, bitrate, size,
             suffix, content_type, year, genre,
-            mtime, content_hash, last_scanned
+            mtime, content_hash, last_scanned, musicbrainz_id
         ) VALUES (
             :album_id, :artist_id, :music_folder_id, :path, :title,
             :track_number, :disc_number, :duration, :bitrate, :size,
             :suffix, :content_type, :year, :genre,
-            :mtime, :content_hash, :last_scanned
+            :mtime, :content_hash, :last_scanned, :musicbrainz_id
         )
         ON CONFLICT(path) DO UPDATE SET
             album_id     = excluded.album_id,
@@ -1113,7 +1169,11 @@ def upsert_track(track: Dict[str, Any]) -> int:
             genre        = excluded.genre,
             mtime        = excluded.mtime,
             content_hash = excluded.content_hash,
-            last_scanned = excluded.last_scanned
+            last_scanned = excluded.last_scanned,
+            -- Preserve an existing track MBID if the incoming tags don't have
+            -- one (e.g. Picard tagged the file once, later untagged copy got
+            -- written over it). Symmetric with the album/artist behaviour.
+            musicbrainz_id = COALESCE(tracks.musicbrainz_id, excluded.musicbrainz_id)
         RETURNING id
         """,
         track,
@@ -1266,7 +1326,7 @@ def search3(
 
     artists = conn.execute(
         """
-        SELECT id, name, album_count
+        SELECT id, name, album_count, musicbrainz_id
           FROM artists
          WHERE name LIKE :pattern COLLATE NOCASE
          LIMIT :limit OFFSET :offset
@@ -1277,7 +1337,8 @@ def search3(
     albums = conn.execute(
         """
         SELECT al.id, al.name, al.year, al.cover_art_id, al.track_count, al.duration,
-               al.artist_id, ar.name AS artist_name
+               al.artist_id, al.musicbrainz_id, al.musicbrainz_releasegroup_id,
+               ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
          WHERE al.name LIKE :pattern COLLATE NOCASE
@@ -1292,6 +1353,7 @@ def search3(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
                    t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
                    t.album_id, al.name AS album_name, al.cover_art_id
               FROM tracks t
@@ -1301,11 +1363,34 @@ def search3(
             """,
             {"limit": song_count, "offset": song_offset},
         ).fetchall()
+    elif get_dialect() == DIALECT_POSTGRES:
+        # Postgres full-text: ranked search over the tsvector column
+        # populated by schema.postgres.sql's BEFORE INSERT/UPDATE trigger.
+        # `websearch_to_tsquery('simple', :query)` accepts Google-style
+        # inputs (quoted phrases, `-` negation, OR) and the 'simple' config
+        # avoids stemming — same behaviour as the FTS5 default.
+        songs = conn.execute(
+            """
+            SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                   t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
+                   t.artist_id, ar.name AS artist_name,
+                   t.album_id, al.name AS album_name, al.cover_art_id
+              FROM tracks t
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         LEFT JOIN albums  al ON al.id = t.album_id
+             WHERE t.search_tsv @@ websearch_to_tsquery('simple', :query)
+          ORDER BY ts_rank(t.search_tsv, websearch_to_tsquery('simple', :query)) DESC
+             LIMIT :limit OFFSET :offset
+            """,
+            {"query": query, "limit": song_count, "offset": song_offset},
+        ).fetchall()
     else:
         songs = conn.execute(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
                    t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
                    t.album_id, al.name AS album_name, al.cover_art_id
               FROM tracks t
@@ -1383,7 +1468,8 @@ def create_user(
 ) -> int:
     """Insert a new user. Raises IntegrityError if username is taken."""
     now = int(time.time())
-    cur = get_conn().execute(
+    # RETURNING instead of lastrowid — works on both sqlite3 and psycopg.
+    row = get_conn().execute(
         """
         INSERT INTO users (
             username, password_hash, is_admin, created_at, password_changed_at,
@@ -1398,6 +1484,7 @@ def create_user(
             :playlist_role, :cover_art_role, :comment_role, :podcast_role,
             :jukebox_role, :share_role, :video_conversion_role
         )
+        RETURNING id
         """,
         {
             "username": username,
@@ -1420,8 +1507,8 @@ def create_user(
             "share_role": int(share_role),
             "video_conversion_role": int(video_conversion_role),
         },
-    )
-    return cur.lastrowid
+    ).fetchone()
+    return int(row["id"])
 
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:

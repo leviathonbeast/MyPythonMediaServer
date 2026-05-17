@@ -4,7 +4,7 @@
 #
 # Copy this file to `config.yaml` (next to the `backend/` package) and edit
 # to taste. Any setting may also be overridden via an environment variable
-# with the prefix MUSE_ (e.g. MUSE_DATABASE_PATH=/var/muse/muse.db).
+# with the prefix MUSE_ (e.g. MUSE_DATABASE_URL=postgresql://user:pass@host/db).
 #
 # Settings precedence (highest first):
 #   1. environment variables  (MUSE_*)
@@ -34,9 +34,32 @@ audio_extensions:
 
 # --- Storage --------------------------------------------------------------- #
 
-# Where to keep the SQLite database. Should be on a local disk (not over a
-# network mount) for both performance and corruption safety.
-database_path: ./data/muse.db
+# Database backend. Two URL schemes are supported:
+#
+#   sqlite:///path/to/file.db         — SQLite. Use ./relative or /absolute.
+#                                       Single file on disk, no server. Best
+#                                       for single-user installs; the default.
+#
+#   postgresql://user:pass@host:5432/dbname
+#                                     — Postgres 14 or newer. The schema uses
+#                                       the `citext` extension; Muse creates
+#                                       it automatically on first run, which
+#                                       means the configured DB user needs
+#                                       CREATE permission on the database.
+#                                       When running the bundled docker-compose
+#                                       Postgres profile, the host is
+#                                       `postgres` (the service name), not
+#                                       `localhost`.
+#
+# When this is unset, the legacy `database_path` below is used (so existing
+# installs upgrade without config changes).
+# database_url: sqlite:///./data/library.db
+# database_url: postgresql://muse:muse@localhost:5432/muse
+
+# Legacy SQLite-only setting. Ignored when database_url is set above.
+# Should be on a local disk (not over a network mount) for both performance
+# and corruption safety.
+database_path: ./data/library.db
 
 # Where to cache extracted album artwork as image files.
 artwork_cache_dir: ./data/artwork

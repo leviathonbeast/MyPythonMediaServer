@@ -45,6 +45,7 @@ from typing import Any, Dict, Set
 
 from backend.config import get_settings
 from backend.db import get_conn, queries, transaction
+from backend.db.connection import DIALECT_POSTGRES, get_dialect
 from backend.scanner import artwork as artwork_module
 
 log = logging.getLogger(__name__)
@@ -94,9 +95,13 @@ def run_gc(*, vacuum: bool = False) -> GcResult:
     """
     started = time.time()
     settings = get_settings()
-    db_path = settings.database_path
+    # File-size reporting is a SQLite concept (the .db is one file on disk).
+    # On Postgres the on-disk size is a server-side concern — `pg_database_size()`
+    # could be exposed later if useful, but for now we just leave it at 0.
+    is_sqlite = get_dialect() != DIALECT_POSTGRES
+    db_path = settings.database_path if is_sqlite else ""
 
-    size_before = _file_size(db_path)
+    size_before = _file_size(db_path) if is_sqlite else 0
     conn = get_conn()
 
     log.info("gc: starting (vacuum=%s)", vacuum)
@@ -123,24 +128,46 @@ def run_gc(*, vacuum: bool = False) -> GcResult:
     )
 
     # ---- 4. Engine maintenance -----------------------------------------
-    # WAL checkpoint is cheap and safe; always run.
-    wal_done = _wal_checkpoint(conn)
+    # WAL is a SQLite-specific journal mode; Postgres has no equivalent
+    # concept exposed to clients (its WAL is managed entirely server-side).
+    wal_done = _wal_checkpoint(conn) if is_sqlite else False
 
     vacuumed = False
     if vacuum:
-        # VACUUM cannot run inside a transaction; sqlite3 also requires
-        # autocommit mode, so we set isolation_level=None temporarily.
-        # Note that this acquires an exclusive lock — every other
-        # connection will block. Acceptable for an explicit admin action.
-        prior_isolation = conn.isolation_level
-        try:
-            conn.isolation_level = None
-            conn.execute("VACUUM")
-            vacuumed = True
-        finally:
-            conn.isolation_level = prior_isolation
+        if is_sqlite:
+            # SQLite VACUUM cannot run inside a transaction; sqlite3 also
+            # requires autocommit mode, so we set isolation_level=None
+            # temporarily. Acquires an exclusive lock — every other
+            # connection will block. Acceptable for an explicit admin action.
+            prior_isolation = conn.isolation_level
+            try:
+                conn.isolation_level = None
+                conn.execute("VACUUM")
+                vacuumed = True
+            finally:
+                conn.isolation_level = prior_isolation
+        else:
+            # Postgres VACUUM also can't run inside a transaction. psycopg
+            # is in autocommit=False by default, so we flip the underlying
+            # connection's autocommit flag for the duration of the call.
+            # Plain `VACUUM` (without FULL) is online — it doesn't take an
+            # exclusive lock — so this is much cheaper than the SQLite path
+            # and safe to run while the API serves traffic.
+            raw = conn._raw  # type: ignore[attr-defined]
+            prior_autocommit = raw.autocommit
+            try:
+                # autocommit can only be toggled when there's no open
+                # transaction. The earlier cleanups exited their
+                # `with transaction():` blocks so we're idle here, but
+                # an explicit commit is cheap insurance.
+                conn.commit()
+                raw.autocommit = True
+                conn.execute("VACUUM")
+                vacuumed = True
+            finally:
+                raw.autocommit = prior_autocommit
 
-    size_after = _file_size(db_path)
+    size_after = _file_size(db_path) if is_sqlite else 0
     finished = time.time()
 
     result = GcResult(
@@ -188,7 +215,7 @@ def _cleanup_dangling_starred(conn) -> int:
     Remove `starred` rows whose target no longer exists.
 
     The starred table is polymorphic — `target_type` is 'track', 'album',
-    or 'artist' — which is why SQLite can't enforce this with a foreign
+    or 'artist' — which is why we can't enforce this with a foreign
     key. We simulate the constraint here.
     """
     total = 0
@@ -200,9 +227,9 @@ def _cleanup_dangling_starred(conn) -> int:
         ):
             cur = conn.execute(
                 f"DELETE FROM starred "
-                f"WHERE target_type = ? "
+                f"WHERE target_type = :kind "
                 f"  AND target_id NOT IN (SELECT id FROM {table})",
-                (kind,),
+                {"kind": kind},
             )
             total += cur.rowcount
     return total
@@ -292,15 +319,19 @@ def _cleanup_missing_artwork_refs() -> int:
         return 0
 
     # Chunk to keep the SQL within SQLite's default 999 host-parameter cap.
+    # Use generated `:p0, :p1, ...` named placeholders so this works on both
+    # dialects (psycopg doesn't accept `?` positional binding).
     conn = get_conn()
     total = 0
     with transaction():
         for i in range(0, len(stale), 500):
             chunk = stale[i : i + 500]
-            placeholders = ",".join("?" * len(chunk))
+            placeholders = ",".join(f":p{j}" for j in range(len(chunk)))
+            params = {f"p{j}": v for j, v in enumerate(chunk)}
             cur = conn.execute(
-                f"UPDATE albums SET cover_art_id = NULL WHERE cover_art_id IN ({placeholders})",
-                chunk,
+                f"UPDATE albums SET cover_art_id = NULL "
+                f"WHERE cover_art_id IN ({placeholders})",
+                params,
             )
             total += cur.rowcount
     return total
@@ -315,7 +346,7 @@ def _referenced_cover_art_ids() -> Set[str]:
         )
         .fetchall()
     )
-    return {row[0] for row in rows if row[0]}
+    return {row["cover_art_id"] for row in rows if row["cover_art_id"]}
 
 
 def _wal_checkpoint(conn) -> bool:

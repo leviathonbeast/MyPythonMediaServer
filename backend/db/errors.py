@@ -1,20 +1,31 @@
 """
 Database exception types — one place callers import from.
 
-Today these are aliases for the sqlite3 driver's exceptions. If we ever
-swap the storage backend (Postgres, MariaDB, ...) only this file changes:
-the right-hand side gets repointed at the new driver's exceptions and
-every `from backend.db.errors import IntegrityError` continues to work.
+Each name here is a TUPLE of `(sqlite3_exception, psycopg_exception)` so
+that `except IntegrityError:` catches a uniqueness violation regardless
+of which driver is actually serving the connection. Python's `except`
+clause accepts a tuple of exception classes natively.
 
-Centralising avoids the situation where a future port has to grep every
-`except sqlite3.IntegrityError` in the codebase and rewrite it case by
-case. The cost is one tiny file; the win is a clean cut-over surface.
+psycopg is imported under a try/except so that SQLite-only installs
+don't fail if psycopg isn't present in the environment — in that case
+the tuples collapse to a one-element single-driver form.
 """
 
-from sqlite3 import (
-    IntegrityError,
-    OperationalError,
-    DatabaseError,
-)
+from __future__ import annotations
+
+import sqlite3
+
+try:
+    import psycopg  # noqa: F401 — import only to verify availability
+    from psycopg import errors as _pg_errors
+
+    IntegrityError = (sqlite3.IntegrityError, _pg_errors.IntegrityError)
+    OperationalError = (sqlite3.OperationalError, _pg_errors.OperationalError)
+    DatabaseError = (sqlite3.DatabaseError, _pg_errors.DatabaseError)
+except ImportError:
+    IntegrityError = sqlite3.IntegrityError  # type: ignore[assignment]
+    OperationalError = sqlite3.OperationalError  # type: ignore[assignment]
+    DatabaseError = sqlite3.DatabaseError  # type: ignore[assignment]
+
 
 __all__ = ["IntegrityError", "OperationalError", "DatabaseError"]

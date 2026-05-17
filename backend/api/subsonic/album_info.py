@@ -46,11 +46,16 @@ def _build_album_info(id: str, ctx: SubsonicContext, key: str) -> Response:
 
     images = deezer.get_album_images(album["artist_name"], album["name"])
 
+    # Prefer the release-group MBID when present — it identifies the
+    # release across editions (vinyl, CD, deluxe, etc.), which is what
+    # most clients want from this field. Fall back to the release MBID.
+    mb_id = album.get("musicbrainz_releasegroup_id") or album.get("musicbrainz_id") or ""
+
     return responses.ok(
         {
             key: {
                 "notes": None,
-                "musicBrainzId": "",
+                "musicBrainzId": mb_id,
                 "lastFmUrl": "",
                 "smallImageUrl": images.get("cover_small") if images else None,
                 "mediumImageUrl": images.get("cover_medium") if images else None,

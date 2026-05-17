@@ -50,7 +50,7 @@ def _build_artist_info(id: str, ctx: SubsonicContext, key: str) -> Response:
         {
             key: {
                 "biography": bio.summary if bio else None,
-                "musicBrainzId": "",
+                "musicBrainzId": artist.get("musicbrainz_id") or "",
                 "smallImageUrl": images.get("picture_small") if images else None,
                 "mediumImageUrl": images.get("picture_medium") if images else None,
                 "largeImageUrl": images.get("picture_xl") if images else None,

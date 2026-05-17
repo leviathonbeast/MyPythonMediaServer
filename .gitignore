@@ -25,6 +25,7 @@ config.yaml
 *.log
 .claude
 DB_PORTABILITY.md
+POSTGRES_BACKEND.md
 
 # Secrets
 .env

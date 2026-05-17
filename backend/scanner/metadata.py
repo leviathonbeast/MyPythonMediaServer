@@ -48,6 +48,16 @@ class TrackMetadata:
     # lowercase and don't validate further; the artist page maps known
     # values into display groups and falls back to "album" for the rest.
     release_type: Optional[str] = None
+    # MusicBrainz identifiers. Optional in every case — libraries tagged by
+    # Picard / beets carry them, hand-curated libraries usually don't.
+    # Surfaced on API responses as `musicBrainzId` so OpenSubsonic clients
+    # (and the getAlbumInfo[2] endpoint) can resolve back to canonical MB
+    # entries.
+    musicbrainz_track_id: Optional[str] = None        # recording MBID
+    musicbrainz_album_id: Optional[str] = None        # release MBID
+    musicbrainz_releasegroup_id: Optional[str] = None # release-group MBID
+    musicbrainz_artist_id: Optional[str] = None       # track-artist MBID
+    musicbrainz_albumartist_id: Optional[str] = None  # album-artist MBID
     has_embedded_art: bool = False
     art_data: Optional[bytes] = field(default=None, repr=False)
 
@@ -118,6 +128,14 @@ def _try_mutagen(path: str, meta: TrackMetadata) -> None:
     # FLAC/Vorbis exposes this as 'releasetype' through the easy interface.
     # ID3 and MP4 don't, so we also probe the raw tags below.
     release_type = first("releasetype") or first("musicbrainz_albumtype")
+    # MusicBrainz identifiers. Names are standardised across the formats
+    # mutagen knows about (Vorbis comments, EasyID3, EasyMP4 expose them
+    # under the same lowercase keys).
+    mb_track = first("musicbrainz_trackid")
+    mb_album = first("musicbrainz_albumid")
+    mb_releasegroup = first("musicbrainz_releasegroupid")
+    mb_artist = first("musicbrainz_artistid")
+    mb_albumartist = first("musicbrainz_albumartistid")
 
     if title:        meta.title = title
     if artist:       meta.artist = artist
@@ -128,6 +146,11 @@ def _try_mutagen(path: str, meta: TrackMetadata) -> None:
     if disc_no:      meta.disc_number = _parse_int_pair(disc_no)
     if date:         meta.year = _parse_year(date)
     if release_type: meta.release_type = _normalise_release_type(release_type)
+    if mb_track:         meta.musicbrainz_track_id = mb_track
+    if mb_album:         meta.musicbrainz_album_id = mb_album
+    if mb_releasegroup:  meta.musicbrainz_releasegroup_id = mb_releasegroup
+    if mb_artist:        meta.musicbrainz_artist_id = mb_artist
+    if mb_albumartist:   meta.musicbrainz_albumartist_id = mb_albumartist
 
     # Reload without easy=True to get streaminfo + embedded art.
     try:

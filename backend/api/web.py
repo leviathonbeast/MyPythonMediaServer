@@ -512,7 +512,7 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
     for a in albums:
         rt = (a.get("release_type") or "").strip().lower() or None
         bucket = _RELEASE_TYPE_GROUPS.get(rt, "other")
-        grouped[bucket].append({
+        entry = {
             "id":           library_core.make_album_id(a["id"]),
             "name":         a["name"],
             "artist":       artist["name"],
@@ -523,7 +523,12 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
             "track_count":  a.get("track_count"),
             "duration":     a.get("duration"),
             "coverArt":     a.get("cover_art_id"),
-        })
+        }
+        if a.get("musicbrainz_id"):
+            entry["musicBrainzId"] = a["musicbrainz_id"]
+        if a.get("musicbrainz_releasegroup_id"):
+            entry["musicBrainzReleaseGroupId"] = a["musicbrainz_releasegroup_id"]
+        grouped[bucket].append(entry)
 
     # "Appearances": tracks credited to this artist on albums whose
     # album-artist is someone else (compilations, guest features, etc.).
@@ -567,6 +572,7 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
         "id":             library_core.make_artist_id(internal_id),
         "name":           artist["name"],
         "album_count":    artist.get("album_count"),
+        "musicBrainzId":  artist.get("musicbrainz_id"),
         "albums_grouped": grouped,
         "appearances":    appearances,
         "bio":            bio.as_dict() if bio else None,
