@@ -24,6 +24,7 @@ config.yaml
 .idea/
 *.log
 .claude
+DB_PORTABILITY.md
 
 # Secrets
 .env
