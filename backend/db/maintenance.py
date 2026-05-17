@@ -147,25 +147,14 @@ def run_gc(*, vacuum: bool = False) -> GcResult:
             finally:
                 conn.isolation_level = prior_isolation
         else:
-            # Postgres VACUUM also can't run inside a transaction. psycopg
-            # is in autocommit=False by default, so we flip the underlying
-            # connection's autocommit flag for the duration of the call.
-            # Plain `VACUUM` (without FULL) is online — it doesn't take an
-            # exclusive lock — so this is much cheaper than the SQLite path
-            # and safe to run while the API serves traffic.
-            raw = conn._raw  # type: ignore[attr-defined]
-            prior_autocommit = raw.autocommit
-            try:
-                # autocommit can only be toggled when there's no open
-                # transaction. The earlier cleanups exited their
-                # `with transaction():` blocks so we're idle here, but
-                # an explicit commit is cheap insurance.
-                conn.commit()
-                raw.autocommit = True
-                conn.execute("VACUUM")
-                vacuumed = True
-            finally:
-                raw.autocommit = prior_autocommit
+            # Postgres VACUUM also can't run inside a transaction. Our
+            # psycopg connection runs with autocommit=True (see
+            # connection._new_pg_connection) so no transaction is open
+            # here — VACUUM can just run. Plain `VACUUM` without FULL is
+            # online and doesn't take an exclusive lock, so it's safe to
+            # invoke while the API is serving traffic.
+            conn.execute("VACUUM")
+            vacuumed = True
 
     size_after = _file_size(db_path) if is_sqlite else 0
     finished = time.time()

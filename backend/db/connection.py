@@ -245,6 +245,19 @@ class _PgConnection:
     def rollback(self) -> None:
         self._raw.rollback()
 
+    def transaction(self):
+        """Return psycopg's native transaction context manager.
+
+        Used by the top-level `transaction()` helper. With `autocommit=True`
+        (the configured default — see `_new_pg_connection`), statements
+        outside an explicit transaction block auto-commit individually, so
+        a failed read query can't poison subsequent queries on the same
+        thread-local connection. Writes that need atomicity bundle their
+        statements inside this context manager — psycopg handles the
+        BEGIN, COMMIT, and ROLLBACK automatically.
+        """
+        return self._raw.transaction()
+
     def close(self) -> None:
         self._raw.close()
 
@@ -253,15 +266,28 @@ def _new_pg_connection() -> _PgConnection:
     """
     Open a fresh psycopg connection wrapped in `_PgConnection`.
 
-    Configured with `row_factory=dict_row` so `row["col"]` works the same
-    way sqlite3.Row's interface does. `autocommit=False` is the default;
-    we rely on explicit transaction() boundaries everywhere.
+    `autocommit=True` is critical. With autocommit=False (psycopg's
+    default), every statement opens an implicit transaction and the
+    connection holds it open until something explicitly commits. If any
+    statement fails, Postgres aborts that transaction and rejects every
+    subsequent statement on the connection with InFailedSqlTransaction
+    until somebody rolls back. Our thread-local connection cache reuses
+    one connection for the thread's lifetime, so one failed read query
+    would poison the whole thread forever.
+
+    autocommit=True flips this: every statement is its own auto-committed
+    unit, failures are isolated, and atomic write batches use psycopg's
+    native `conn.transaction()` context via `_PgConnection.transaction()`
+    above. SQLite has different transaction semantics and isn't affected.
+
+    `row_factory=dict_row` makes rows support `row["col"]` access, matching
+    the sqlite3.Row interface queries.py uses throughout.
     """
     import psycopg
     from psycopg.rows import dict_row
 
     assert _pg_dsn is not None
-    raw = psycopg.connect(_pg_dsn, row_factory=dict_row, autocommit=False)
+    raw = psycopg.connect(_pg_dsn, row_factory=dict_row, autocommit=True)
     return _PgConnection(raw)
 
 
@@ -323,9 +349,17 @@ def transaction() -> Iterator[ConnectionType]:
             conn.execute(...)
             conn.execute(...)
 
-    On clean exit we COMMIT, on exception we ROLLBACK and re-raise. Works
-    identically on both dialects: SQLite auto-begins on the first write,
-    psycopg auto-begins on the first statement when `autocommit=False`.
+    On clean exit we COMMIT, on exception we ROLLBACK and re-raise.
+
+    The two dialects need different machinery to express this:
+
+      * SQLite auto-begins on the first write and we drive commit /
+        rollback explicitly.
+      * Postgres runs in `autocommit=True` mode (see _new_pg_connection
+        for why), so statements outside this block auto-commit each
+        on their own. Inside the block we delegate to psycopg's native
+        `Connection.transaction()` which issues BEGIN on enter,
+        COMMIT on clean exit, ROLLBACK on exception.
 
     IMPORTANT for tests: writes are NOT visible to other database
     connections until commit(). The `with transaction():` pattern is the
@@ -334,12 +368,18 @@ def transaction() -> Iterator[ConnectionType]:
     rows.
     """
     conn = get_conn()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    if _dialect == DIALECT_POSTGRES:
+        # psycopg's native transaction context handles BEGIN / COMMIT /
+        # ROLLBACK. Nesting is allowed (uses SAVEPOINTs).
+        with conn.transaction():  # type: ignore[union-attr]
+            yield conn
+    else:
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def close_thread_connection() -> None:

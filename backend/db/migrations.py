@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, List, Tuple
 
 from backend.config import get_settings
-from .connection import DIALECT_POSTGRES, get_conn, get_dialect
+from .connection import DIALECT_POSTGRES, get_conn, get_dialect, transaction
 
 # Each migration is (version, callable). Callable receives a connection and
 # does whatever it needs. Versions must be monotonically increasing.
@@ -161,15 +161,15 @@ def run_migrations() -> None:
     for version, fn in MIGRATIONS:
         if version <= current:
             continue
-        # Each migration runs in its own transaction so a failure rolls back
-        # cleanly and the schema_version row only gets bumped on success.
-        try:
+        # Each migration runs inside a transaction() so a partial-failure
+        # rolls back cleanly and the schema_version row only gets bumped
+        # on success. The helper handles both dialects — SQLite via manual
+        # commit/rollback, Postgres via psycopg's native transaction
+        # context (since we run with autocommit=True, raw commit/rollback
+        # would be no-ops).
+        with transaction():
             fn(conn)
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (:version)",
                 {"version": version},
             )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
