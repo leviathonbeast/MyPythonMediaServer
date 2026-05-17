@@ -283,6 +283,14 @@ def get_playcount_by_user(user_id: int, track_id: int) -> int:
 
 def list_playlists(user_id: int) -> List[Dict[str, Any]]:
     """Return playlists owned by user plus all public ones."""
+    # GROUP BY needs `u.username` explicitly because Postgres only
+    # treats columns as functionally dependent on the GROUP BY when
+    # they're from the same table whose primary key is grouped.
+    # `p.id` covers every column from `playlists`, but `u.username`
+    # is from a JOINed table and Postgres refuses without it in the
+    # group list. SQLite was happy to pick an arbitrary u.username
+    # per group; the answer is the same since there's only ever one
+    # owner per playlist, but Postgres needs the rule stated.
     rows = (
         get_conn()
         .execute(
@@ -297,7 +305,7 @@ def list_playlists(user_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN tracks t           ON t.id = pt.track_id
      LEFT JOIN users u            ON u.id = p.owner_id
          WHERE p.owner_id = :user_id OR p.is_public = 1
-      GROUP BY p.id
+      GROUP BY p.id, u.username
         """,
             {"user_id": user_id},
         )
@@ -713,10 +721,14 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
 
 def list_genre_count() -> List[Dict[str, Any]]:
     """All genres with their album and track counts."""
+    # Aliases are double-quoted so Postgres preserves the camelCase
+    # column names. Without quoting Postgres folds unquoted identifiers
+    # to lowercase, which would surface as KeyError('songCount') in
+    # the API layer. SQLite accepts the quoting unchanged.
     rows = get_conn().execute("""
         SELECT genre,
-               COUNT(DISTINCT album_id) AS albumCount,
-               COUNT(*) AS songCount
+               COUNT(DISTINCT album_id) AS "albumCount",
+               COUNT(*) AS "songCount"
           FROM tracks
          WHERE genre IS NOT NULL
       GROUP BY genre
