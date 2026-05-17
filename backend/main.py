@@ -60,6 +60,20 @@ logging.basicConfig(
 log = logging.getLogger("muse")
 
 
+def _redact_db_url(url: str) -> str:
+    """Mask the password component of a database URL for safe logging.
+
+    `postgresql://user:secret@host:5432/db` → `postgresql://user:***@host:5432/db`
+    SQLite URLs have no credentials, so they pass through unchanged.
+    """
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    if not parsed.password:
+        return url
+    netloc = parsed.netloc.replace(f":{parsed.password}@", ":***@", 1)
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown hook — runs once per worker."""
@@ -69,7 +83,11 @@ async def lifespan(app: FastAPI):
     ensure_directories(settings)
     init_db(settings)
     run_migrations()
-    log.info("Database ready at %s", settings.database_path)
+    # Log the resolved URL with credentials masked, so it's immediately
+    # obvious whether we landed on the dialect the operator intended.
+    # Bare "Database ready at /data/library.db" is easy to skim past
+    # when you thought you'd configured Postgres.
+    log.info("Database ready: %s", _redact_db_url(settings.resolved_database_url()))
 
     _DEFAULT_SECRET = "muse-dev-secret-change-me"
     if settings.jwt_secret == _DEFAULT_SECRET:
