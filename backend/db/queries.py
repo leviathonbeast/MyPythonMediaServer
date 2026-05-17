@@ -676,13 +676,13 @@ def list_artists_indexed() -> Dict[str, List[Dict[str, Any]]]:
                  SELECT artist_id, cover_art_id,
                         ROW_NUMBER() OVER (
                             PARTITION BY artist_id
-                            ORDER BY year DESC, created_at DESC
+                            ORDER BY year DESC NULLS LAST, created_at DESC NULLS LAST
                         ) AS rn
                    FROM albums
                   WHERE cover_art_id IS NOT NULL
                ) cv ON cv.artist_id = a.id AND cv.rn = 1
          WHERE a.album_count > 0
-      ORDER BY sort_name COLLATE NOCASE
+      ORDER BY sort_name COLLATE NOCASE NULLS LAST
         """).fetchall()
 
     indexed: Dict[str, List[Dict[str, Any]]] = {}
@@ -797,7 +797,7 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
                musicbrainz_id, musicbrainz_releasegroup_id
           FROM albums
          WHERE artist_id = :artist_id
-      ORDER BY year, name COLLATE NOCASE
+      ORDER BY year NULLS LAST, name COLLATE NOCASE
         """,
             {"artist_id": artist_id},
         )
@@ -953,8 +953,8 @@ def list_albums(
         order_clause = {
             "newest":               "al.created_at DESC",
             "alphabeticalByName":   "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
-            "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC",
-            "byYear":               "al.year ASC, COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
+            "alphabeticalByArtist": "ar.name COLLATE NOCASE ASC, al.year ASC NULLS LAST",
+            "byYear":               "al.year ASC NULLS LAST, COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
             "byGenre":              "COALESCE(al.sort_name, al.name) COLLATE NOCASE ASC",
             "random":               "RANDOM()",
         }.get(list_type, "al.name COLLATE NOCASE ASC")
@@ -1232,7 +1232,7 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
          WHERE t.album_id = :album_id
-      ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE
+      ORDER BY t.disc_number NULLS LAST, t.track_number NULLS LAST, t.title COLLATE NOCASE
         """,
             {"album_id": album_id},
         )
