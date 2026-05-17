@@ -26,7 +26,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .connection import get_conn
+from .connection import DIALECT_POSTGRES, get_conn, get_dialect
 
 
 _LEADING_ARTICLE_RE = re.compile(r'^(the|a|an)\s+', re.IGNORECASE)
@@ -425,12 +425,13 @@ def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> None:
     conn = get_conn()
     row = conn.execute(
         """
-        SELECT COALESCE(MAX(position), -1) FROM playlist_tracks
+        SELECT COALESCE(MAX(position), -1) AS max_position
+          FROM playlist_tracks
          WHERE playlist_id = :playlist_id
         """,
         {"playlist_id": playlist_id},
     ).fetchone()
-    next_pos = row[0] + 1
+    next_pos = row["max_position"] + 1
 
     conn.executemany(
         """
@@ -1361,6 +1362,28 @@ def search3(
              LIMIT :limit OFFSET :offset
             """,
             {"limit": song_count, "offset": song_offset},
+        ).fetchall()
+    elif get_dialect() == DIALECT_POSTGRES:
+        # Postgres full-text: ranked search over the tsvector column
+        # populated by schema.postgres.sql's BEFORE INSERT/UPDATE trigger.
+        # `websearch_to_tsquery('simple', :query)` accepts Google-style
+        # inputs (quoted phrases, `-` negation, OR) and the 'simple' config
+        # avoids stemming — same behaviour as the FTS5 default.
+        songs = conn.execute(
+            """
+            SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                   t.track_number, t.year, t.genre, t.path,
+                   t.musicbrainz_id,
+                   t.artist_id, ar.name AS artist_name,
+                   t.album_id, al.name AS album_name, al.cover_art_id
+              FROM tracks t
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         LEFT JOIN albums  al ON al.id = t.album_id
+             WHERE t.search_tsv @@ websearch_to_tsquery('simple', :query)
+          ORDER BY ts_rank(t.search_tsv, websearch_to_tsquery('simple', :query)) DESC
+             LIMIT :limit OFFSET :offset
+            """,
+            {"query": query, "limit": song_count, "offset": song_offset},
         ).fetchall()
     else:
         songs = conn.execute(
