@@ -71,9 +71,14 @@ def _migration_003_seed_music_folders(conn: sqlite3.Connection) -> None:
     settings = get_settings()
     for path in settings.music_folders:
         name = Path(path).name or path
+        # ON CONFLICT DO NOTHING is the portable form of INSERT OR IGNORE.
         conn.execute(
-            "INSERT OR IGNORE INTO music_folders (name, path) VALUES (?, ?)",
-            (name, path),
+            """
+            INSERT INTO music_folders (name, path)
+            VALUES (:name, :path)
+            ON CONFLICT (path) DO NOTHING
+            """,
+            {"name": name, "path": path},
         )
 
 

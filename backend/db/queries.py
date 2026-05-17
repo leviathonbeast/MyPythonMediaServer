@@ -66,10 +66,13 @@ def _rows_to_dicts(rows) -> List[Dict[str, Any]]:
 
 
 def star_item(user_id: int, target_type: str, target_id: int) -> None:
+    # ON CONFLICT DO NOTHING is the portable form of INSERT OR IGNORE.
+    # Both SQLite (>= 3.24) and Postgres support it identically.
     get_conn().execute(
         """
-        INSERT OR IGNORE INTO starred (user_id, target_type, target_id, starred_at)
+        INSERT INTO starred (user_id, target_type, target_id, starred_at)
         VALUES (:user_id, :target_type, :target_id, :starred_at)
+        ON CONFLICT (user_id, target_type, target_id) DO NOTHING
         """,
         {
             "user_id": user_id,
@@ -553,17 +556,25 @@ def save_play_queue(
 ) -> None:
     """Replace this user's saved queue with a new one."""
     conn = get_conn()
-    # Wipe the old ordered list. The header row in play_queues is overwritten
-    # below via INSERT OR REPLACE, so we don't need to delete it explicitly.
+    # Wipe the old ordered list. The header row in play_queues is upserted
+    # below, so we don't need to delete it explicitly.
     conn.execute(
         "DELETE FROM play_queue_entries WHERE user_id = :user_id",
         {"user_id": user_id},
     )
+    # INSERT ... ON CONFLICT DO UPDATE is the portable form of
+    # INSERT OR REPLACE. Replaces all the columns of the conflicting row
+    # with the new values; only the user_id (the PK) stays.
     conn.execute(
         """
-        INSERT OR REPLACE INTO play_queues
+        INSERT INTO play_queues
             (user_id, current_id, position_ms, changed_at, changed_by)
         VALUES (:user_id, :current_id, :position_ms, :changed_at, :changed_by)
+        ON CONFLICT (user_id) DO UPDATE SET
+            current_id  = excluded.current_id,
+            position_ms = excluded.position_ms,
+            changed_at  = excluded.changed_at,
+            changed_by  = excluded.changed_by
         """,
         {
             "user_id": user_id,
