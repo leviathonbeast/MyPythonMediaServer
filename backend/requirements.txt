@@ -8,11 +8,11 @@ pydantic-settings>=2.1.0
 PyYAML>=6.0
 
 # ---- Auth -------------------------------------------------------------------
-bcrypt=5.0.0
-python-jose[cryptography]=3.5.0
+bcrypt==5.0.0
+python-jose[cryptography]==3.5.0
 
 # ---- Audio metadata ---------------------------------------------------------
-mutagen=1.47.0
+mutagen==1.47.0
 
 # ---- Image processing -------------------------------------------------------
 # Used for on-the-fly cover-art resizing in getCoverArt. Pillow's bundled
