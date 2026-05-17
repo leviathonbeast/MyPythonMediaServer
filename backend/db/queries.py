@@ -209,13 +209,16 @@ def add_music_folder(name: str, path: str) -> int:
 
     Caller is expected to validate `path` (existence, readability) before
     calling — this layer just enforces the UNIQUE constraint on path,
-    raising sqlite3.IntegrityError on duplicates.
+    raising IntegrityError on duplicates.
+
+    Uses RETURNING instead of lastrowid so it works on Postgres too;
+    psycopg cursors don't expose a lastrowid attribute.
     """
-    cur = get_conn().execute(
-        "INSERT INTO music_folders (name, path) VALUES (:name, :path)",
+    row = get_conn().execute(
+        "INSERT INTO music_folders (name, path) VALUES (:name, :path) RETURNING id",
         {"name": name, "path": path},
-    )
-    return cur.lastrowid
+    ).fetchone()
+    return int(row["id"])
 
 
 def delete_music_folder(folder_id: int) -> bool:
@@ -347,14 +350,16 @@ def create_playlist(name: str, owner_id: int, track_ids: List[int]) -> int:
     """Insert playlist + tracks, return new id."""
     now = int(time.time())
     conn = get_conn()
-    cur = conn.execute(
+    # RETURNING instead of lastrowid — works on both sqlite3 and psycopg.
+    row = conn.execute(
         """
         INSERT INTO playlists (owner_id, name, created_at, updated_at)
         VALUES (:owner_id, :name, :created_at, :updated_at)
+        RETURNING id
         """,
         {"owner_id": owner_id, "name": name, "created_at": now, "updated_at": now},
-    )
-    playlist_id = cur.lastrowid
+    ).fetchone()
+    playlist_id = int(row["id"])
 
     if track_ids:
         conn.executemany(
@@ -1383,7 +1388,8 @@ def create_user(
 ) -> int:
     """Insert a new user. Raises IntegrityError if username is taken."""
     now = int(time.time())
-    cur = get_conn().execute(
+    # RETURNING instead of lastrowid — works on both sqlite3 and psycopg.
+    row = get_conn().execute(
         """
         INSERT INTO users (
             username, password_hash, is_admin, created_at, password_changed_at,
@@ -1398,6 +1404,7 @@ def create_user(
             :playlist_role, :cover_art_role, :comment_role, :podcast_role,
             :jukebox_role, :share_role, :video_conversion_role
         )
+        RETURNING id
         """,
         {
             "username": username,
@@ -1420,8 +1427,8 @@ def create_user(
             "share_role": int(share_role),
             "video_conversion_role": int(video_conversion_role),
         },
-    )
-    return cur.lastrowid
+    ).fetchone()
+    return int(row["id"])
 
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
