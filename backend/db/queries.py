@@ -1629,7 +1629,13 @@ def update_user(
 
 
 def update_user_password(user_id: int, password_hash: str) -> bool:
-    """Replace the stored password hash by id. Returns True if the user existed."""
+    """Replace the stored password hash by id. Returns True if the user existed.
+
+    Caller is responsible for wrapping in a `with transaction():` block.
+    Manual `conn.commit()` would conflict with psycopg's transaction
+    context manager (Postgres autocommit=True mode raises an explicit-
+    commit error inside its native transaction).
+    """
     conn = get_conn()
     cur = conn.execute(
         """
@@ -1644,39 +1650,44 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
             "id": user_id,
         },
     )
-    conn.commit()
     return cur.rowcount > 0
 
 
 def update_encrypted_password(user_id: int, value: Optional[str]) -> None:
-    """Store or clear the Fernet-encrypted plaintext password used for Subsonic token+salt auth."""
+    """Store or clear the Fernet-encrypted plaintext password used for Subsonic token+salt auth.
+
+    Caller wraps in `with transaction():`. See update_user_password.
+    """
     conn = get_conn()
     conn.execute(
         "UPDATE users SET encrypted_password = :value WHERE id = :id",
         {"value": value, "id": user_id},
     )
-    conn.commit()
 
 
 def set_user_disabled(user_id: int, disabled: bool) -> bool:
-    """Set or clear the disabled flag by id. Returns True if the user existed."""
+    """Set or clear the disabled flag by id. Returns True if the user existed.
+
+    Caller wraps in `with transaction():`. See update_user_password.
+    """
     conn = get_conn()
     cur = conn.execute(
         "UPDATE users SET disabled = :disabled WHERE id = :id",
         {"disabled": int(disabled), "id": user_id},
     )
-    conn.commit()
     return cur.rowcount > 0
 
 
 def set_user_admin(user_id: int, is_admin: bool) -> bool:
-    """Set or clear the admin flag by id. Returns True if the user existed."""
+    """Set or clear the admin flag by id. Returns True if the user existed.
+
+    Caller wraps in `with transaction():`. See update_user_password.
+    """
     conn = get_conn()
     cur = conn.execute(
         "UPDATE users SET is_admin = :is_admin WHERE id = :id",
         {"is_admin": int(is_admin), "id": user_id},
     )
-    conn.commit()
     return cur.rowcount > 0
 
 

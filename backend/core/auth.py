@@ -39,7 +39,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
 
 from backend.config import get_settings
-from backend.db import queries
+from backend.db import queries, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,10 @@ def _verify_with_password(username: str, plaintext: str) -> Optional[Dict[str, A
     # (the plaintext can't change without a password change, which has
     # its own update path).
     if not user.get("encrypted_password"):
-        queries.update_encrypted_password(user["id"], encrypt_password(plaintext))
+        # update_encrypted_password no longer commits internally — the
+        # transaction wrapper handles it on both dialects.
+        with transaction():
+            queries.update_encrypted_password(user["id"], encrypt_password(plaintext))
 
     # Warm in-memory caches.
     _verify_cache[(username, plaintext)] = (user_info, time.time() + _CACHE_TTL)
