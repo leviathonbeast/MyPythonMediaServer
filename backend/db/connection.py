@@ -1,53 +1,122 @@
 """
-SQLite connection management.
+Database connection management — dialect-aware.
 
-WHY a custom layer instead of SQLAlchemy:
-    For this workload (mostly read-heavy single-statement queries on a single
-    SQLite file) SQLAlchemy adds overhead and complexity without much benefit.
-    We get explicit SQL, predictable performance, and zero ORM surprises.
-    Migrating to SQLAlchemy later is straightforward — queries.py is the only
-    module that talks SQL directly.
+Supports two backends, selected by `settings.resolved_database_url()`:
+
+    sqlite:///./data/library.db
+    postgresql://user:pass@host:port/dbname
 
 Threading model:
-    SQLite connections are per-thread (the default safe mode). FastAPI runs
-    handlers in a thread pool, so we use a thread-local connection registry
-    and let each thread keep its own connection alive for the request.
+    Each thread caches its own connection in a `threading.local()` registry
+    and reuses it for the thread's lifetime. FastAPI's thread pool eventually
+    recycles threads, so connections close themselves. This model works for
+    both SQLite (per-thread is required) and Postgres (we don't bother with
+    a connection pool — the pool size needed for a single-user music server
+    is tiny and a thread-local cache achieves the same effect).
 
-WAL mode notes:
-    With journal_mode=WAL, readers don't block writers and vice versa. That's
-    important during a scan, when the scanner is writing while the API serves
-    reads. Without WAL, a long scan would freeze the API.
+Param-style:
+    Every query in `queries.py` uses `:name` named binding. SQLite supports
+    that natively. psycopg uses `%(name)s` — so for Postgres connections we
+    wrap `execute()`/`executemany()` in `_PgConnection` and translate the
+    SQL on the way through with a regex (`:name` → `%(name)s`). This means
+    `queries.py` never has to know which dialect is active.
+
+WAL mode notes (SQLite):
+    With journal_mode=WAL, readers don't block writers and vice versa.
+    Important during a scan, when the scanner writes while the API serves
+    reads. Without WAL, a long scan would freeze the API. Postgres has its
+    own equivalent behaviour out of the box; no tuning needed.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional, Union
+from urllib.parse import urlparse
 
 from backend.config import Settings
 
 # ---------------------------------------------------------------------------
-# Thread-local registry. Each thread gets exactly one connection it reuses.
+# Dialect identification.
+#
+# Resolved once at startup by init_db() and exposed via get_dialect() so the
+# migrations layer and any dialect-aware query can branch without re-parsing
+# the URL each time.
 # ---------------------------------------------------------------------------
+DIALECT_SQLITE = "sqlite"
+DIALECT_POSTGRES = "postgres"
+_dialect: Optional[str] = None
+
+# SQLite-specific
+_db_path: Optional[str] = None
+
+# Postgres-specific. We store the libpq DSN (after rewriting the scheme
+# from `postgresql://` to `postgresql://`, which is a no-op — but we keep
+# a single source of truth for what to pass to psycopg.connect()).
+_pg_dsn: Optional[str] = None
+
+# Thread-local connection registry. Each thread gets exactly one
+# connection it reuses for its whole lifetime.
 _local = threading.local()
-_db_path: Optional[str] = None  # set once by init_db()
 
 
 def init_db(settings: Settings) -> None:
     """
-    One-time initialisation.
+    One-time initialisation. Resolves the dialect from `database_url` (or
+    the legacy `database_path` fallback) and stashes the per-dialect state.
 
-    Stores the database path so later calls to `get_conn()` know where to go,
-    and creates the parent directory. Schema creation lives in migrations.py.
+    Idempotent — safe to call multiple times in tests.
     """
-    global _db_path
-    db_path = Path(settings.database_path).resolve()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _db_path = str(db_path)
+    global _dialect, _db_path, _pg_dsn
 
+    url = settings.resolved_database_url()
+    parsed = urlparse(url)
+
+    if parsed.scheme == "sqlite":
+        # sqlite:///./relative or sqlite:////absolute. urlparse leaves
+        # the path with a leading slash; strip exactly one for relative
+        # paths so Path() doesn't treat them as absolute.
+        path = parsed.path
+        if path.startswith("/") and not parsed.netloc:
+            # urlparse gives sqlite:///./foo.db → path="/./foo.db"
+            # and sqlite:////abs/foo.db        → path="//abs/foo.db"
+            # The double-slash form is the absolute one; single-slash
+            # is the relative form we want to strip.
+            if not path.startswith("//"):
+                path = path[1:]
+            else:
+                path = path[1:]  # also strip one for absolute → "/abs/foo.db"
+        db_path = Path(path).resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        _db_path = str(db_path)
+        _pg_dsn = None
+        _dialect = DIALECT_SQLITE
+    elif parsed.scheme in ("postgresql", "postgres"):
+        _db_path = None
+        # psycopg accepts the URL form directly.
+        _pg_dsn = url
+        _dialect = DIALECT_POSTGRES
+    else:
+        raise ValueError(
+            f"Unsupported database URL scheme: {parsed.scheme!r}. "
+            "Use sqlite:///path/to/file.db or postgresql://user:pass@host/db."
+        )
+
+
+def get_dialect() -> str:
+    """Return the active dialect string. Raises if init_db() hasn't run."""
+    if _dialect is None:
+        raise RuntimeError("init_db() must be called before any DB access")
+    return _dialect
+
+
+# ---------------------------------------------------------------------------
+# SQLite-side.
+# ---------------------------------------------------------------------------
 
 _DEFAULT_CACHE_PAGES = -30000  # ~120 MB — enough for hot API queries
 _SCANNER_CACHE_PAGES = -40000  # ~160 MB — ample for libraries up to ~150k tracks
@@ -57,59 +126,123 @@ def _tune_sqlite(conn: sqlite3.Connection, cache_pages: int) -> None:
     """
     Apply every SQLite-specific PRAGMA we care about to a fresh connection.
 
-    All the dialect-specific knobs are concentrated here so that swapping
-    `_new_connection()` for a Postgres connection factory in a future port
-    means replacing one function rather than picking PRAGMAs out of a
-    longer initialiser.
+    All the dialect-specific knobs are concentrated here. On Postgres these
+    have no equivalent — Postgres tunes via postgresql.conf / `ALTER SYSTEM`
+    at the server side, not per-connection.
     """
-    # foreign_keys must be set on every connection — it's not a database-level
-    # setting in SQLite.
     conn.execute("PRAGMA foreign_keys = ON;")
-    # journal_mode is a *database-level* setting (persists across opens) but
-    # setting it on every connection is safe + idempotent. Without WAL the
-    # scanner's commit and any API write serialise on a single exclusive
-    # lock — a long scan reliably aborts the first time a login or progress
-    # poll arrives. WAL lets readers and writers proceed concurrently.
     conn.execute("PRAGMA journal_mode = WAL;")
-    # synchronous=NORMAL is the standard pairing with WAL: fsync only at
-    # checkpoint boundaries, not on every COMMIT. Safe for crash recovery
-    # (the WAL replays on next open) and ~5× faster for write-heavy
-    # workloads like a full library scan.
     conn.execute("PRAGMA synchronous = NORMAL;")
-    # Negative value = page count; SQLite page size is 4096 bytes.
-    # API threads use the default (120 MB); the scanner thread requests more
-    # via init_thread_connection() because it reads the entire library.
     conn.execute(f"PRAGMA cache_size = {int(cache_pages)};")
-    # busy_timeout means writers wait instead of immediately erroring on lock
-    # contention. With WAL enabled this rarely fires; kept as a safety net
-    # for the very brief windows where two writers contend (e.g. scanner
-    # commit + a user updating their playlist at the same instant).
     conn.execute("PRAGMA busy_timeout = 10000;")
-    # Memory-mapped IO for reads. SQLite serves index/table pages straight
-    # from the kernel page cache without a userspace copy. 256 MB is plenty
-    # for libraries up to ~500k tracks; the OS reclaims it under pressure.
     conn.execute("PRAGMA mmap_size = 268435456;")
-    # Keep TEMP B-TREEs (group-by/order-by spill, automatic indexes) in RAM
-    # rather than on disk. Affects every aggregating browse query.
     conn.execute("PRAGMA temp_store = MEMORY;")
 
 
-def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> sqlite3.Connection:
-    """
-    Open a fresh connection with the pragmas we always want.
-
-    detect_types lets us read TIMESTAMP columns as datetime objects if we ever
-    add them. row_factory=Row gives us dict-like access to columns.
-    """
-    if _db_path is None:
-        raise RuntimeError("init_db() must be called before any DB access")
+def _new_sqlite_connection(cache_pages: int) -> sqlite3.Connection:
+    assert _db_path is not None
     conn = sqlite3.connect(_db_path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
     conn.row_factory = sqlite3.Row
     _tune_sqlite(conn, cache_pages)
     return conn
 
 
-def get_conn() -> sqlite3.Connection:
+# ---------------------------------------------------------------------------
+# Postgres-side.
+#
+# We lazy-import psycopg so importing this module on a SQLite-only deployment
+# doesn't require psycopg to be installed.
+# ---------------------------------------------------------------------------
+
+# `:name` → `%(name)s`. Matches names that start with an alpha or underscore
+# and continue with word chars. Doesn't try to dodge `::cast` casts because
+# our codebase doesn't use them; if we ever add Postgres-specific casts, the
+# regex will need a negative-lookbehind for the preceding `:`.
+_NAMED_PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _translate_named_params(sql: str) -> str:
+    """Translate SQLite-style `:name` placeholders to psycopg `%(name)s`."""
+    return _NAMED_PARAM_RE.sub(r"%(\1)s", sql)
+
+
+class _PgConnection:
+    """
+    Thin wrapper around a psycopg.Connection that mimics enough of the
+    sqlite3.Connection surface for queries.py to use it interchangeably:
+
+      * execute(sql, params=None)     → returns a Cursor
+      * executemany(sql, params_seq)  → returns a Cursor
+      * commit() / rollback() / close()
+
+    Both methods translate `:name` placeholders to `%(name)s` before
+    handing the SQL to psycopg. Rows come back as plain dicts (psycopg's
+    `dict_row` factory), which supports the `row["col"]` access pattern
+    queries.py uses throughout.
+    """
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+
+    def execute(self, sql: str, params: Optional[Any] = None) -> Any:
+        sql = _translate_named_params(sql)
+        if params is None:
+            return self._raw.execute(sql)
+        return self._raw.execute(sql, params)
+
+    def executemany(self, sql: str, params_seq: Iterable[Any]) -> Any:
+        sql = _translate_named_params(sql)
+        cur = self._raw.cursor()
+        cur.executemany(sql, params_seq)
+        return cur
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+
+def _new_pg_connection() -> _PgConnection:
+    """
+    Open a fresh psycopg connection wrapped in `_PgConnection`.
+
+    Configured with `row_factory=dict_row` so `row["col"]` works the same
+    way sqlite3.Row's interface does. `autocommit=False` is the default;
+    we rely on explicit transaction() boundaries everywhere.
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    assert _pg_dsn is not None
+    raw = psycopg.connect(_pg_dsn, row_factory=dict_row, autocommit=False)
+    return _PgConnection(raw)
+
+
+# ---------------------------------------------------------------------------
+# Public API — get_conn / init_thread_connection / transaction
+# ---------------------------------------------------------------------------
+
+# The annotated return type is the SQLite union — `_PgConnection` mimics
+# enough of sqlite3.Connection's surface that callers don't need to care.
+ConnectionType = Union[sqlite3.Connection, _PgConnection]
+
+
+def _new_connection(cache_pages: int = _DEFAULT_CACHE_PAGES) -> ConnectionType:
+    """Open a fresh connection for the active dialect."""
+    if _dialect is None:
+        raise RuntimeError("init_db() must be called before any DB access")
+    if _dialect == DIALECT_SQLITE:
+        return _new_sqlite_connection(cache_pages)
+    # Postgres ignores the SQLite cache_pages hint — server-side tuning is
+    # done via postgresql.conf / shared_buffers / work_mem instead.
+    return _new_pg_connection()
+
+
+def get_conn() -> ConnectionType:
     """
     Return the current thread's connection, creating it on first use.
 
@@ -125,12 +258,11 @@ def get_conn() -> sqlite3.Connection:
 
 def init_thread_connection(cache_pages: int) -> None:
     """
-    Open (or replace) this thread's connection with an explicit cache size.
+    Open (or replace) this thread's connection.
 
-    Call this at the very start of any long-lived worker thread before the
-    first get_conn() use. The scanner thread calls it with _SCANNER_CACHE_PAGES
-    so it gets a larger cache without inflating every API thread's footprint.
-    Any existing connection for this thread is closed first.
+    On SQLite, `cache_pages` lets long-lived worker threads (the scanner)
+    request a larger per-connection cache. On Postgres, the parameter is
+    accepted-but-ignored — server-side tuning is global.
     """
     existing = getattr(_local, "conn", None)
     if existing is not None:
@@ -139,7 +271,7 @@ def init_thread_connection(cache_pages: int) -> None:
 
 
 @contextmanager
-def transaction() -> Iterator[sqlite3.Connection]:
+def transaction() -> Iterator[ConnectionType]:
     """
     Context manager for explicit transactions.
 
@@ -148,21 +280,15 @@ def transaction() -> Iterator[sqlite3.Connection]:
             conn.execute(...)
             conn.execute(...)
 
-    A "transaction" groups several database writes so they either ALL succeed
-    or ALL fail together (atomicity). For example, when the scanner writes an
-    artist, album, and 12 tracks, it does all of them inside one transaction.
-    If the server crashes halfway through, the partial data is rolled back
-    automatically — you never end up with an album that has no artist.
+    On clean exit we COMMIT, on exception we ROLLBACK and re-raise. Works
+    identically on both dialects: SQLite auto-begins on the first write,
+    psycopg auto-begins on the first statement when `autocommit=False`.
 
-    On clean exit we COMMIT (make the writes permanent and visible to other
-    connections). On exception we ROLLBACK and re-raise the error. SQLite
-    auto-begins a transaction on the first write, so we just have to manage
-    the commit/rollback boundary.
-
-    IMPORTANT for tests: writes are NOT visible to other database connections
-    until you call commit(). The `with transaction():` pattern is the correct
-    way to write data in test setup so that the API (which runs on a different
-    thread with its own connection) can see the seeded rows.
+    IMPORTANT for tests: writes are NOT visible to other database
+    connections until commit(). The `with transaction():` pattern is the
+    correct way to write data in test setup so that the API (which runs
+    on a different thread with its own connection) can see the seeded
+    rows.
     """
     conn = get_conn()
     try:
@@ -174,12 +300,7 @@ def transaction() -> Iterator[sqlite3.Connection]:
 
 
 def close_thread_connection() -> None:
-    """
-    Close the connection bound to the current thread, if any.
-
-    Useful in tests and at shutdown. Not normally called per-request — the
-    overhead of opening/closing is significant on SQLite.
-    """
+    """Close the connection bound to the current thread, if any."""
     conn = getattr(_local, "conn", None)
     if conn is not None:
         conn.close()
