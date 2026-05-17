@@ -73,7 +73,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: muse
     volumes:
-      - muse-postgres-data:/var/lib/postgresql/data
+      # Postgres 18+ stores data in a major-version-specific subdirectory
+      # (/var/lib/postgresql/<version>/data) so pg_upgrade --link works
+      # across major versions. The mount point must be the parent, not
+      # the data dir, or the image refuses to start.
+      - muse-postgres-data:/var/lib/postgresql
     # Server tuning. Sized for a single-user music server on a small VM
     # (~1 GiB RAM allotted to the DB). Adjust if you have more headroom
     # or a multi-instance Muse deployment. Reference values picked with
