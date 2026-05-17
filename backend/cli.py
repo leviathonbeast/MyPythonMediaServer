@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import sqlite3
 import sys
 
 from backend.config import ensure_directories, get_settings
 from backend.core.auth import hash_password
 from backend.db import init_db, run_migrations, queries
+from backend.db.errors import IntegrityError
 from backend.db.connection import transaction
 
 
@@ -54,7 +54,7 @@ def cmd_useradd(args: argparse.Namespace) -> int:
                 is_admin=args.admin,
                 email=args.email,
             )
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         sys.exit(f"User '{args.username}' already exists")
     print(f"Created user '{args.username}' (id={uid}, admin={args.admin})")
     return 0

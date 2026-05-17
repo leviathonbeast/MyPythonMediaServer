@@ -69,9 +69,14 @@ def star_item(user_id: int, target_type: str, target_id: int) -> None:
     get_conn().execute(
         """
         INSERT OR IGNORE INTO starred (user_id, target_type, target_id, starred_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (:user_id, :target_type, :target_id, :starred_at)
         """,
-        (user_id, target_type, target_id, int(time.time())),
+        {
+            "user_id": user_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "starred_at": int(time.time()),
+        },
     )
 
 
@@ -79,9 +84,11 @@ def unstar_item(user_id: int, target_type: str, target_id: int) -> None:
     get_conn().execute(
         """
         DELETE FROM starred
-         WHERE user_id = ? AND target_type = ? AND target_id = ?
+         WHERE user_id = :user_id
+           AND target_type = :target_type
+           AND target_id = :target_id
         """,
-        (user_id, target_type, target_id),
+        {"user_id": user_id, "target_type": target_type, "target_id": target_id},
     )
 
 
@@ -130,10 +137,10 @@ def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN albums  al    ON s.target_type = 'album'  AND s.target_id = al.id
      LEFT JOIN artists al_ar ON al.artist_id = al_ar.id
      LEFT JOIN artists ar    ON s.target_type = 'artist' AND s.target_id = ar.id
-         WHERE s.user_id = ?
+         WHERE s.user_id = :user_id
       ORDER BY s.starred_at DESC
         """,
-            (user_id,),
+            {"user_id": user_id},
         )
         .fetchall()
     )
@@ -177,8 +184,8 @@ def get_music_folder(folder_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, path FROM music_folders WHERE id = ?",
-            (folder_id,),
+            "SELECT id, name, path FROM music_folders WHERE id = :id",
+            {"id": folder_id},
         )
         .fetchone()
     )
@@ -189,8 +196,8 @@ def get_music_folder_by_path(path: str) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, path FROM music_folders WHERE path = ?",
-            (path,),
+            "SELECT id, name, path FROM music_folders WHERE path = :path",
+            {"path": path},
         )
         .fetchone()
     )
@@ -205,8 +212,8 @@ def add_music_folder(name: str, path: str) -> int:
     raising sqlite3.IntegrityError on duplicates.
     """
     cur = get_conn().execute(
-        "INSERT INTO music_folders (name, path) VALUES (?, ?)",
-        (name, path),
+        "INSERT INTO music_folders (name, path) VALUES (:name, :path)",
+        {"name": name, "path": path},
     )
     return cur.lastrowid
 
@@ -218,7 +225,10 @@ def delete_music_folder(folder_id: int) -> bool:
     Aggregate cleanup of newly-empty albums/artists is the GC's job, not
     ours — call run_gc() afterwards.
     """
-    cur = get_conn().execute("DELETE FROM music_folders WHERE id = ?", (folder_id,))
+    cur = get_conn().execute(
+        "DELETE FROM music_folders WHERE id = :id",
+        {"id": folder_id},
+    )
     return cur.rowcount > 0
 
 
@@ -231,12 +241,17 @@ def play_count(user_id: int, track_id: int) -> None:
     get_conn().execute(
         """
         INSERT INTO play_counts (user_id, track_id, play_count, last_played)
-        VALUES (?, ?, ?, ?)
+        VALUES (:user_id, :track_id, :play_count, :last_played)
         ON CONFLICT(user_id, track_id) DO UPDATE SET
             play_count  = play_counts.play_count + 1,
             last_played = excluded.last_played
         """,
-        (user_id, track_id, 1, int(time.time())),
+        {
+            "user_id": user_id,
+            "track_id": track_id,
+            "play_count": 1,
+            "last_played": int(time.time()),
+        },
     )
 
 
@@ -244,8 +259,11 @@ def get_playcount_by_user(user_id: int, track_id: int) -> int:
     row = (
         get_conn()
         .execute(
-            "SELECT play_count FROM play_counts WHERE user_id = ? AND track_id = ?",
-            (user_id, track_id),
+            """
+            SELECT play_count FROM play_counts
+             WHERE user_id = :user_id AND track_id = :track_id
+            """,
+            {"user_id": user_id, "track_id": track_id},
         )
         .fetchone()
     )
@@ -272,10 +290,10 @@ def list_playlists(user_id: int) -> List[Dict[str, Any]]:
      LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
      LEFT JOIN tracks t           ON t.id = pt.track_id
      LEFT JOIN users u            ON u.id = p.owner_id
-         WHERE p.owner_id = ? OR p.is_public = 1
+         WHERE p.owner_id = :user_id OR p.is_public = 1
       GROUP BY p.id
         """,
-            (user_id,),
+            {"user_id": user_id},
         )
         .fetchall()
     )
@@ -290,9 +308,9 @@ def get_playlist(playlist_id: int) -> Optional[Dict[str, Any]]:
         SELECT p.*, u.username AS owner
           FROM playlists p
      LEFT JOIN users u ON u.id = p.owner_id
-         WHERE p.id = ?
+         WHERE p.id = :playlist_id
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchone()
 
     if header is None:
@@ -312,10 +330,10 @@ def get_playlist(playlist_id: int) -> Optional[Dict[str, Any]]:
      LEFT JOIN tracks  t  ON t.id  = pt.track_id
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE pt.playlist_id = ?
+         WHERE pt.playlist_id = :playlist_id
       ORDER BY pt.position
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchall()
 
     result = _row_to_dict(header)
@@ -332,16 +350,22 @@ def create_playlist(name: str, owner_id: int, track_ids: List[int]) -> int:
     cur = conn.execute(
         """
         INSERT INTO playlists (owner_id, name, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (:owner_id, :name, :created_at, :updated_at)
         """,
-        (owner_id, name, now, now),
+        {"owner_id": owner_id, "name": name, "created_at": now, "updated_at": now},
     )
     playlist_id = cur.lastrowid
 
     if track_ids:
         conn.executemany(
-            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-            [(playlist_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO playlist_tracks (playlist_id, position, track_id)
+            VALUES (:playlist_id, :position, :track_id)
+            """,
+            [
+                {"playlist_id": playlist_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
 
     return playlist_id
@@ -355,25 +379,26 @@ def update_playlist(
 ) -> bool:
     """Update any subset of (name, comment, public). Returns True if a row matched."""
     # Build SET clause dynamically — only include fields the caller supplied.
+    # Each SET clause references a named placeholder; the params dict carries
+    # exactly those keys plus :playlist_id for the WHERE.
     fields: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"playlist_id": playlist_id}
 
     if name is not None:
-        fields.append("name = ?")
-        params.append(name)
+        fields.append("name = :name")
+        params["name"] = name
     if comment is not None:
-        fields.append("comment = ?")
-        params.append(comment)
+        fields.append("comment = :comment")
+        params["comment"] = comment
     if public is not None:
-        fields.append("is_public = ?")
-        params.append(int(public))  # SQLite stores booleans as 0/1
+        fields.append("is_public = :is_public")
+        params["is_public"] = int(public)  # SQLite stores booleans as 0/1
 
     if not fields:
         return True  # nothing to update — avoid invalid SQL
 
-    params.append(playlist_id)
     cur = get_conn().execute(
-        f"UPDATE playlists SET {', '.join(fields)} WHERE id = ?",
+        f"UPDATE playlists SET {', '.join(fields)} WHERE id = :playlist_id",
         params,
     )
     return cur.rowcount > 0
@@ -382,8 +407,8 @@ def update_playlist(
 def delete_playlist(playlist_id: int, owner_id: int) -> bool:
     """Delete only if caller owns it."""
     cur = get_conn().execute(
-        "DELETE FROM playlists WHERE id = ? AND owner_id = ?",
-        (playlist_id, owner_id),
+        "DELETE FROM playlists WHERE id = :playlist_id AND owner_id = :owner_id",
+        {"playlist_id": playlist_id, "owner_id": owner_id},
     )
     return cur.rowcount > 0
 
@@ -391,53 +416,78 @@ def delete_playlist(playlist_id: int, owner_id: int) -> bool:
 def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> None:
     conn = get_conn()
     row = conn.execute(
-        "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?",
-        (playlist_id,),
+        """
+        SELECT COALESCE(MAX(position), -1) FROM playlist_tracks
+         WHERE playlist_id = :playlist_id
+        """,
+        {"playlist_id": playlist_id},
     ).fetchone()
     next_pos = row[0] + 1
 
     conn.executemany(
-        "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-        [(playlist_id, next_pos + i, tid) for i, tid in enumerate(track_ids)],
+        """
+        INSERT INTO playlist_tracks (playlist_id, position, track_id)
+        VALUES (:playlist_id, :position, :track_id)
+        """,
+        [
+            {"playlist_id": playlist_id, "position": next_pos + i, "track_id": tid}
+            for i, tid in enumerate(track_ids)
+        ],
     )
 
 
 def replace_playlist_tracks(playlist_id: int, track_ids: List[int]) -> None:
     """Replace the entire track list of a playlist (used by createPlaylist update mode)."""
     conn = get_conn()
-    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+    conn.execute(
+        "DELETE FROM playlist_tracks WHERE playlist_id = :playlist_id",
+        {"playlist_id": playlist_id},
+    )
     if track_ids:
         conn.executemany(
-            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?, ?, ?)",
-            [(playlist_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO playlist_tracks (playlist_id, position, track_id)
+            VALUES (:playlist_id, :position, :track_id)
+            """,
+            [
+                {"playlist_id": playlist_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
     now = int(time.time())
     conn.execute(
-        "UPDATE playlists SET updated_at = ? WHERE id = ?", (now, playlist_id)
+        "UPDATE playlists SET updated_at = :updated_at WHERE id = :playlist_id",
+        {"updated_at": now, "playlist_id": playlist_id},
     )
 
 
 def remove_tracks_from_playlist(playlist_id: int, positions: List[int]) -> None:
     conn = get_conn()
     conn.executemany(
-        "DELETE FROM playlist_tracks WHERE playlist_id = ? AND position = ?",
-        [(playlist_id, pos) for pos in positions],
+        """
+        DELETE FROM playlist_tracks
+         WHERE playlist_id = :playlist_id AND position = :position
+        """,
+        [{"playlist_id": playlist_id, "position": pos} for pos in positions],
     )
 
     # Renumber positions so the remaining tracks stay 0..N-1 contiguous.
     remaining = conn.execute(
         """
         SELECT track_id FROM playlist_tracks
-         WHERE playlist_id = ?
+         WHERE playlist_id = :playlist_id
       ORDER BY position ASC
         """,
-        (playlist_id,),
+        {"playlist_id": playlist_id},
     ).fetchall()
 
     conn.executemany(
-        "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
+        """
+        UPDATE playlist_tracks SET position = :position
+         WHERE playlist_id = :playlist_id AND track_id = :track_id
+        """,
         [
-            (new_pos, playlist_id, track_id)
+            {"position": new_pos, "playlist_id": playlist_id, "track_id": track_id}
             for new_pos, (track_id,) in enumerate(remaining)
         ],
     )
@@ -456,25 +506,25 @@ def get_play_queue(user_id: int) -> Optional[Dict[str, Any]]:
         SELECT p.*, u.username AS owner
           FROM play_queues p
      LEFT JOIN users u ON u.id = p.user_id
-         WHERE p.user_id = ?
+         WHERE p.user_id = :user_id
         """,
-        (user_id,),
+        {"user_id": user_id},
     ).fetchone()
 
     tracks = conn.execute(
         """
         SELECT t.*,
-       ar.name AS artist_name,
-       al.name AS album_name,
-       al.cover_art_id AS cover_art_id
-  FROM play_queue_entries e
-LEFT JOIN tracks  t ON e.track_id = t.id
-LEFT JOIN artists ar ON ar.id = t.artist_id
-LEFT JOIN albums  al ON al.id = t.album_id
-WHERE e.user_id = ?
-ORDER BY e.position
-    """,
-        (user_id,),
+               ar.name AS artist_name,
+               al.name AS album_name,
+               al.cover_art_id AS cover_art_id
+          FROM play_queue_entries e
+     LEFT JOIN tracks  t  ON e.track_id = t.id
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN albums  al ON al.id = t.album_id
+         WHERE e.user_id = :user_id
+      ORDER BY e.position
+        """,
+        {"user_id": user_id},
     ).fetchall()
 
     if header is None:
@@ -500,19 +550,34 @@ def save_play_queue(
     conn = get_conn()
     # Wipe the old ordered list. The header row in play_queues is overwritten
     # below via INSERT OR REPLACE, so we don't need to delete it explicitly.
-    conn.execute("DELETE FROM play_queue_entries WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "DELETE FROM play_queue_entries WHERE user_id = :user_id",
+        {"user_id": user_id},
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO play_queues
             (user_id, current_id, position_ms, changed_at, changed_by)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (:user_id, :current_id, :position_ms, :changed_at, :changed_by)
         """,
-        (user_id, current_track_id, position_ms, int(time.time()), client),
+        {
+            "user_id": user_id,
+            "current_id": current_track_id,
+            "position_ms": position_ms,
+            "changed_at": int(time.time()),
+            "changed_by": client,
+        },
     )
     if track_ids:
         conn.executemany(
-            "INSERT INTO play_queue_entries (user_id, position, track_id) VALUES (?, ?, ?)",
-            [(user_id, pos, tid) for pos, tid in enumerate(track_ids)],
+            """
+            INSERT INTO play_queue_entries (user_id, position, track_id)
+            VALUES (:user_id, :position, :track_id)
+            """,
+            [
+                {"user_id": user_id, "position": pos, "track_id": tid}
+                for pos, tid in enumerate(track_ids)
+            ],
         )
 
 
@@ -537,11 +602,11 @@ def upsert_artist(name: str, sort_name: Optional[str] = None) -> int:
     row = get_conn().execute(
         """
         INSERT INTO artists (name, name_lower, sort_name)
-        VALUES (?, ?, ?)
+        VALUES (:name, :name_lower, :sort_name)
         ON CONFLICT(name_lower) DO UPDATE SET name_lower = artists.name_lower
         RETURNING id
         """,
-        (name, name_lower, sort_name),
+        {"name": name, "name_lower": name_lower, "sort_name": sort_name},
     ).fetchone()
     return int(row["id"])
 
@@ -604,8 +669,8 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            "SELECT id, name, album_count FROM artists WHERE id = ?",
-            (artist_id,),
+            "SELECT id, name, album_count FROM artists WHERE id = :id",
+            {"id": artist_id},
         )
         .fetchone()
     )
@@ -636,11 +701,11 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
     points elsewhere (often the Various-Artists sentinel). Without this
     query those contributions are invisible.
 
-    Filter logic: `tracks.artist_id = ?` keeps only the artist's tracks;
-    `albums.artist_id != ?` drops everything already surfaced via the
-    albums-grouped section. The ordering puts newest first (matches the
-    artist-page album sections) and groups tracks by album so multi-track
-    appearances on the same comp render adjacent.
+    Filter logic: `tracks.artist_id = :artist_id` keeps only the artist's
+    tracks; `albums.artist_id != :artist_id` drops everything already
+    surfaced via the albums-grouped section. The ordering puts newest
+    first (matches the artist-page album sections) and groups tracks by
+    album so multi-track appearances on the same comp render adjacent.
 
     Returns rows in the shape `track_to_subsonic` expects, plus a couple
     of extra fields the frontend can use for context ("appears on …").
@@ -660,14 +725,14 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
           JOIN albums  al ON al.id = t.album_id
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN artists aa ON aa.id = al.artist_id
-         WHERE t.artist_id = ?
-           AND al.artist_id != ?
+         WHERE t.artist_id = :artist_id
+           AND al.artist_id != :artist_id
       ORDER BY COALESCE(al.year, 0) DESC,
                al.name COLLATE NOCASE,
                t.disc_number,
                t.track_number
             """,
-            (artist_id, artist_id),
+            {"artist_id": artist_id},
         )
         .fetchall()
     )
@@ -683,10 +748,10 @@ def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
         SELECT id, artist_id, name, year, genre, release_type, track_count, duration,
                cover_art_id, created_at
           FROM albums
-         WHERE artist_id = ?
+         WHERE artist_id = :artist_id
       ORDER BY year, name COLLATE NOCASE
         """,
-            (artist_id,),
+            {"artist_id": artist_id},
         )
         .fetchall()
     )
@@ -723,14 +788,23 @@ def upsert_album(
     row = get_conn().execute(
         """
         INSERT INTO albums (artist_id, name, name_lower, sort_name, year, genre, release_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (:artist_id, :name, :name_lower, :sort_name, :year, :genre, :release_type, :created_at)
         ON CONFLICT(artist_id, name_lower) DO UPDATE SET
             year         = COALESCE(excluded.year,         albums.year),
             genre        = COALESCE(excluded.genre,        albums.genre),
             release_type = COALESCE(excluded.release_type, albums.release_type)
         RETURNING id
         """,
-        (artist_id, name, name_lower, sort_name, year, genre, release_type, now),
+        {
+            "artist_id": artist_id,
+            "name": name,
+            "name_lower": name_lower,
+            "sort_name": sort_name,
+            "year": year,
+            "genre": genre,
+            "release_type": release_type,
+            "created_at": now,
+        },
     ).fetchone()
     return int(row["id"])
 
@@ -745,9 +819,9 @@ def get_album(album_id: int) -> Optional[Dict[str, Any]]:
                ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
-         WHERE al.id = ?
+         WHERE al.id = :id
         """,
-            (album_id,),
+            {"id": album_id},
         )
         .fetchone()
     )
@@ -777,16 +851,17 @@ def list_albums(
         libraries pre-compute a random sample table or use rowid sampling.
     """
     where_clauses: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"size": size, "offset": offset}
 
     if list_type == "byYear" and from_year is not None and to_year is not None:
         lo, hi = min(from_year, to_year), max(from_year, to_year)
-        where_clauses.append("al.year BETWEEN ? AND ?")
-        params.extend([lo, hi])
+        where_clauses.append("al.year BETWEEN :from_year AND :to_year")
+        params["from_year"] = lo
+        params["to_year"] = hi
 
     if list_type == "byGenre" and genre is not None:
-        where_clauses.append("al.genre = ? COLLATE NOCASE")
-        params.append(genre)
+        where_clauses.append("al.genre = :genre COLLATE NOCASE")
+        params["genre"] = genre
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -810,7 +885,7 @@ def list_albums(
          LEFT JOIN album_plays ap ON ap.aid = al.id
              {where_sql}
           ORDER BY COALESCE(ap.sort_key, 0) DESC
-             LIMIT ? OFFSET ?
+             LIMIT :size OFFSET :offset
         """
     else:
         order_clause = {
@@ -829,10 +904,10 @@ def list_albums(
               JOIN artists ar ON ar.id = al.artist_id
              {where_sql}
           ORDER BY {order_clause}
-             LIMIT ? OFFSET ?
+             LIMIT :size OFFSET :offset
         """
 
-    rows = get_conn().execute(sql, (*params, size, offset)).fetchall()
+    rows = get_conn().execute(sql, params).fetchall()
     return _rows_to_dicts(rows)
 
 
@@ -845,11 +920,11 @@ def update_album_aggregates(album_id: int) -> None:
     get_conn().execute(
         """
         UPDATE albums
-           SET track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?),
-               duration    = (SELECT COALESCE(SUM(duration), 0) FROM tracks WHERE album_id = ?)
-         WHERE id = ?
+           SET track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = :album_id),
+               duration    = (SELECT COALESCE(SUM(duration), 0) FROM tracks WHERE album_id = :album_id)
+         WHERE id = :album_id
         """,
-        (album_id, album_id, album_id),
+        {"album_id": album_id},
     )
 
 
@@ -858,17 +933,17 @@ def update_artist_aggregates(artist_id: int) -> None:
     get_conn().execute(
         """
         UPDATE artists
-           SET album_count = (SELECT COUNT(*) FROM albums WHERE artist_id = ?)
-         WHERE id = ?
+           SET album_count = (SELECT COUNT(*) FROM albums WHERE artist_id = :artist_id)
+         WHERE id = :artist_id
         """,
-        (artist_id, artist_id),
+        {"artist_id": artist_id},
     )
 
 
 def set_album_cover_art(album_id: int, cover_art_id: str) -> None:
     get_conn().execute(
-        "UPDATE albums SET cover_art_id = ? WHERE id = ?",
-        (cover_art_id, album_id),
+        "UPDATE albums SET cover_art_id = :cover_art_id WHERE id = :album_id",
+        {"cover_art_id": cover_art_id, "album_id": album_id},
     )
 
 
@@ -879,8 +954,8 @@ def set_artist_image(artist_id: int, image_id: str) -> None:
     cache dir so the same `getCoverArt` endpoint serves both kinds of image.
     """
     get_conn().execute(
-        "UPDATE artists SET image_id = ? WHERE id = ?",
-        (image_id, artist_id),
+        "UPDATE artists SET image_id = :image_id WHERE id = :artist_id",
+        {"image_id": image_id, "artist_id": artist_id},
     )
 
 
@@ -920,20 +995,20 @@ def list_random_songs(
     filters from the Subsonic spec.
     """
     where: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"size": size}
 
     if genre is not None:
-        where.append("t.genre = ? COLLATE NOCASE")
-        params.append(genre)
+        where.append("t.genre = :genre COLLATE NOCASE")
+        params["genre"] = genre
     if from_year is not None:
-        where.append("t.year >= ?")
-        params.append(from_year)
+        where.append("t.year >= :from_year")
+        params["from_year"] = from_year
     if to_year is not None:
-        where.append("t.year <= ?")
-        params.append(to_year)
+        where.append("t.year <= :to_year")
+        params["to_year"] = to_year
     if music_folder_id is not None:
-        where.append("t.music_folder_id = ?")
-        params.append(music_folder_id)
+        where.append("t.music_folder_id = :music_folder_id")
+        params["music_folder_id"] = music_folder_id
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     rows = (
@@ -949,9 +1024,9 @@ def list_random_songs(
      LEFT JOIN albums  al ON al.id = t.album_id
          {where_sql}
       ORDER BY RANDOM()
-         LIMIT ?
+         LIMIT :size
         """,
-            (*params, size),
+            params,
         )
         .fetchall()
     )
@@ -971,11 +1046,11 @@ def list_song_by_genre(
     rows that appeared on page 1. We sort by id (the rowid alias) because it's
     free: it's the primary key, so the LIMIT+OFFSET walk happens index-only.
     """
-    where = ["t.genre = ? COLLATE NOCASE"]
-    params: List[Any] = [genre]
+    where = ["t.genre = :genre COLLATE NOCASE"]
+    params: Dict[str, Any] = {"genre": genre, "limit": limit, "offset": offset}
     if music_folder_id is not None:
-        where.append("t.music_folder_id = ?")
-        params.append(music_folder_id)
+        where.append("t.music_folder_id = :music_folder_id")
+        params["music_folder_id"] = music_folder_id
     where_sql = "WHERE " + " AND ".join(where)
 
     rows = (
@@ -991,9 +1066,9 @@ def list_song_by_genre(
      LEFT JOIN albums  al ON al.id = t.album_id
          {where_sql}
       ORDER BY t.id
-         LIMIT ? OFFSET ?
+         LIMIT :limit OFFSET :offset
         """,
-            (*params, limit, offset),
+            params,
         )
         .fetchall()
     )
@@ -1058,9 +1133,9 @@ def get_track(track_id: int) -> Optional[Dict[str, Any]]:
           FROM tracks t
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE t.id = ?
+         WHERE t.id = :id
         """,
-            (track_id,),
+            {"id": track_id},
         )
         .fetchone()
     )
@@ -1084,10 +1159,10 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
           FROM tracks t
      LEFT JOIN artists ar ON ar.id = t.artist_id
      LEFT JOIN albums  al ON al.id = t.album_id
-         WHERE t.album_id = ?
+         WHERE t.album_id = :album_id
       ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE
         """,
-            (album_id,),
+            {"album_id": album_id},
         )
         .fetchall()
     )
@@ -1106,8 +1181,11 @@ def get_existing_paths_for_folder(
     rows = (
         get_conn()
         .execute(
-            "SELECT id, path, mtime, size, album_id FROM tracks WHERE music_folder_id = ?",
-            (folder_id,),
+            """
+            SELECT id, path, mtime, size, album_id FROM tracks
+             WHERE music_folder_id = :folder_id
+            """,
+            {"folder_id": folder_id},
         )
         .fetchall()
     )
@@ -1124,10 +1202,15 @@ def delete_tracks(track_ids: List[int]) -> None:
     conn = get_conn()
     # SQLite has a limit on the number of host params; chunk if needed. 500 is
     # safely under SQLITE_MAX_VARIABLE_NUMBER (default 999 / 32766 newer).
+    # Named placeholders can't be repeated bare for a variable-length IN
+    # list, so we generate :id0, :id1, ... per chunk and zip them into a
+    # dict. Slightly wordier than the f"?,?,?" trick but ports cleanly.
     for i in range(0, len(track_ids), 500):
         chunk = track_ids[i : i + 500]
-        placeholders = ",".join("?" * len(chunk))
-        conn.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", chunk)
+        names = [f"id{j}" for j in range(len(chunk))]
+        placeholders = ",".join(f":{n}" for n in names)
+        params = dict(zip(names, chunk))
+        conn.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", params)
 
 
 def cleanup_empty_albums_and_artists() -> Tuple[int, int]:
@@ -1185,10 +1268,10 @@ def search3(
         """
         SELECT id, name, album_count
           FROM artists
-         WHERE name LIKE ? COLLATE NOCASE
-         LIMIT ? OFFSET ?
+         WHERE name LIKE :pattern COLLATE NOCASE
+         LIMIT :limit OFFSET :offset
         """,
-        (pattern, artist_count, artist_offset),
+        {"pattern": pattern, "limit": artist_count, "offset": artist_offset},
     ).fetchall()
 
     albums = conn.execute(
@@ -1197,11 +1280,11 @@ def search3(
                al.artist_id, ar.name AS artist_name
           FROM albums al
           JOIN artists ar ON ar.id = al.artist_id
-         WHERE al.name LIKE ? COLLATE NOCASE
-            OR ar.name LIKE ? COLLATE NOCASE
-         LIMIT ? OFFSET ?
+         WHERE al.name LIKE :pattern COLLATE NOCASE
+            OR ar.name LIKE :pattern COLLATE NOCASE
+         LIMIT :limit OFFSET :offset
         """,
-        (pattern, pattern, album_count, album_offset),
+        {"pattern": pattern, "limit": album_count, "offset": album_offset},
     ).fetchall()
 
     if not query:
@@ -1214,9 +1297,9 @@ def search3(
               FROM tracks t
          LEFT JOIN artists ar ON ar.id = t.artist_id
          LEFT JOIN albums  al ON al.id = t.album_id
-             LIMIT ? OFFSET ?
+             LIMIT :limit OFFSET :offset
             """,
-            (song_count, song_offset),
+            {"limit": song_count, "offset": song_offset},
         ).fetchall()
     else:
         songs = conn.execute(
@@ -1229,10 +1312,10 @@ def search3(
               JOIN virt_fts5 f  ON f.rowid = t.id
          LEFT JOIN artists ar   ON ar.id = t.artist_id
          LEFT JOIN albums  al   ON al.id = t.album_id
-             WHERE virt_fts5 MATCH ?
-             LIMIT ? OFFSET ?
+             WHERE virt_fts5 MATCH :query
+             LIMIT :limit OFFSET :offset
             """,
-            (query, song_count, song_offset),
+            {"query": query, "limit": song_count, "offset": song_offset},
         ).fetchall()
 
     return {
@@ -1298,7 +1381,7 @@ def create_user(
     share_role: bool = False,
     video_conversion_role: bool = False,
 ) -> int:
-    """Insert a new user. Raises sqlite3.IntegrityError if username is taken."""
+    """Insert a new user. Raises IntegrityError if username is taken."""
     now = int(time.time())
     cur = get_conn().execute(
         """
@@ -1308,29 +1391,35 @@ def create_user(
             settings_role, stream_role, download_role, upload_role,
             playlist_role, cover_art_role, comment_role, podcast_role,
             jukebox_role, share_role, video_conversion_role
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            :username, :password_hash, :is_admin, :created_at, :password_changed_at,
+            :email, :scrobbling_enabled, :max_bit_rate,
+            :settings_role, :stream_role, :download_role, :upload_role,
+            :playlist_role, :cover_art_role, :comment_role, :podcast_role,
+            :jukebox_role, :share_role, :video_conversion_role
+        )
         """,
-        (
-            username,
-            password_hash,
-            int(is_admin),
-            now,
-            now,
-            email,
-            int(scrobbling_enabled),
-            max_bit_rate,
-            int(settings_role),
-            int(stream_role),
-            int(download_role),
-            int(upload_role),
-            int(playlist_role),
-            int(cover_art_role),
-            int(comment_role),
-            int(podcast_role),
-            int(jukebox_role),
-            int(share_role),
-            int(video_conversion_role),
-        ),
+        {
+            "username": username,
+            "password_hash": password_hash,
+            "is_admin": int(is_admin),
+            "created_at": now,
+            "password_changed_at": now,
+            "email": email,
+            "scrobbling_enabled": int(scrobbling_enabled),
+            "max_bit_rate": max_bit_rate,
+            "settings_role": int(settings_role),
+            "stream_role": int(stream_role),
+            "download_role": int(download_role),
+            "upload_role": int(upload_role),
+            "playlist_role": int(playlist_role),
+            "cover_art_role": int(cover_art_role),
+            "comment_role": int(comment_role),
+            "podcast_role": int(podcast_role),
+            "jukebox_role": int(jukebox_role),
+            "share_role": int(share_role),
+            "video_conversion_role": int(video_conversion_role),
+        },
     )
     return cur.lastrowid
 
@@ -1339,8 +1428,8 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            f"SELECT {_USER_SELECT} FROM users WHERE username = ?",
-            (username,),
+            f"SELECT {_USER_SELECT} FROM users WHERE username = :username",
+            {"username": username},
         )
         .fetchone()
     )
@@ -1351,8 +1440,8 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     row = (
         get_conn()
         .execute(
-            f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = ?",
-            (user_id,),
+            f"SELECT {_USER_SELECT_NO_HASH} FROM users WHERE id = :id",
+            {"id": user_id},
         )
         .fetchone()
     )
@@ -1400,15 +1489,15 @@ def update_user(
     # update_user("alice", download_role=True) to flip one role without touching
     # anything else, without needing 16 separate update functions.
     fields: List[str] = []
-    params: List[Any] = []
+    params: Dict[str, Any] = {"username": username}
 
     def _add(col: str, val: Any, cast=None) -> None:
-        """Append 'col = ?' to fields and the value to params, if val is not None."""
+        """Append 'col = :col' to fields and the value to params, if val is not None."""
         if val is None:
             return
-        fields.append(f"{col} = ?")
+        fields.append(f"{col} = :{col}")
         # cast converts Python bool to int (SQLite stores booleans as 0/1).
-        params.append(cast(val) if cast else val)
+        params[col] = cast(val) if cast else val
 
     _add("password_hash", password_hash)
     # Stamp the rotation timestamp whenever the hash changes.
@@ -1433,9 +1522,8 @@ def update_user(
     if not fields:
         return bool(get_user_by_username(username))
 
-    params.append(username)
     cur = get_conn().execute(
-        f"UPDATE users SET {', '.join(fields)} WHERE username = ?",
+        f"UPDATE users SET {', '.join(fields)} WHERE username = :username",
         params,
     )
     return cur.rowcount > 0
@@ -1445,8 +1533,17 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
     """Replace the stored password hash by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
-        (password_hash, int(time.time()), user_id),
+        """
+        UPDATE users
+           SET password_hash = :password_hash,
+               password_changed_at = :password_changed_at
+         WHERE id = :id
+        """,
+        {
+            "password_hash": password_hash,
+            "password_changed_at": int(time.time()),
+            "id": user_id,
+        },
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1456,8 +1553,8 @@ def update_encrypted_password(user_id: int, value: Optional[str]) -> None:
     """Store or clear the Fernet-encrypted plaintext password used for Subsonic token+salt auth."""
     conn = get_conn()
     conn.execute(
-        "UPDATE users SET encrypted_password = ? WHERE id = ?",
-        (value, user_id),
+        "UPDATE users SET encrypted_password = :value WHERE id = :id",
+        {"value": value, "id": user_id},
     )
     conn.commit()
 
@@ -1466,8 +1563,8 @@ def set_user_disabled(user_id: int, disabled: bool) -> bool:
     """Set or clear the disabled flag by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET disabled = ? WHERE id = ?",
-        (int(disabled), user_id),
+        "UPDATE users SET disabled = :disabled WHERE id = :id",
+        {"disabled": int(disabled), "id": user_id},
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1477,8 +1574,8 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
     """Set or clear the admin flag by id. Returns True if the user existed."""
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE users SET is_admin = ? WHERE id = ?",
-        (int(is_admin), user_id),
+        "UPDATE users SET is_admin = :is_admin WHERE id = :id",
+        {"is_admin": int(is_admin), "id": user_id},
     )
     conn.commit()
     return cur.rowcount > 0
@@ -1486,13 +1583,19 @@ def set_user_admin(user_id: int, is_admin: bool) -> bool:
 
 def delete_user(user_id: int) -> bool:
     """Remove a user by id. Returns True if a row was deleted."""
-    cur = get_conn().execute("DELETE FROM users WHERE id = ?", (user_id,))
+    cur = get_conn().execute(
+        "DELETE FROM users WHERE id = :id",
+        {"id": user_id},
+    )
     return cur.rowcount > 0
 
 
 def delete_user_by_username(username: str) -> bool:
     """Remove a user by username. Returns True if a row was deleted."""
-    cur = get_conn().execute("DELETE FROM users WHERE username = ?", (username,))
+    cur = get_conn().execute(
+        "DELETE FROM users WHERE username = :username",
+        {"username": username},
+    )
     return cur.rowcount > 0
 
 

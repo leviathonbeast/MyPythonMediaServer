@@ -33,7 +33,6 @@ Any authenticated user:
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -46,6 +45,7 @@ from backend.core import library as library_core
 from backend.db import maintenance as db_maintenance
 from backend.db import queries
 from backend.db.connection import transaction
+from backend.db.errors import IntegrityError
 from backend.scanner import (
     cancel_scan,
     get_progress,
@@ -323,7 +323,7 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
     try:
         with transaction():
             new_id = queries.add_music_folder(name, resolved)
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         existing = queries.get_music_folder_by_path(resolved)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -383,7 +383,7 @@ def users_create(body: UserCreateRequest, _=Depends(jwt_admin)):
                 is_admin=body.is_admin,
             )
             queries.update_encrypted_password(new_id, auth_core.encrypt_password(body.password))
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Username '{body.username}' is already taken",

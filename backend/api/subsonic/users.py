@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import Optional
 
 from fastapi import Depends, Query, Response
@@ -8,6 +7,7 @@ from fastapi import Depends, Query, Response
 from backend.core.auth import hash_password, encrypt_password
 from backend.db import queries
 from backend.db.connection import transaction
+from backend.db.errors import IntegrityError
 
 from .helpers import (
     _double_register,
@@ -131,7 +131,7 @@ def create_user(
             queries.update_encrypted_password(new_id, encrypt_password(plaintext))
             if maxBitRate is not None:
                 queries.update_user(username, max_bit_rate=maxBitRate)
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         return responses.error(
             responses.ERR_GENERIC,
             f"Username '{username}' already exists",
