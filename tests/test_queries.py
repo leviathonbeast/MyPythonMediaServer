@@ -141,10 +141,15 @@ class TestUpsertAlbum:
 
 class TestUpsertTrack:
     def test_returning_matches_lookup_id(self, client, seeded_library):
-        """RETURNING id must match a follow-up SELECT WHERE path = ?."""
+        """RETURNING id must match a follow-up SELECT by path.
+
+        Uses named binding (`:path`) — `?` positional binding works on
+        SQLite but not on psycopg, and the rest of the codebase has
+        long since standardised on named bindings anyway.
+        """
         row = queries.get_conn().execute(
-            "SELECT id FROM tracks WHERE path = ?",
-            ("/test/fixtures/music/song.mp3",),
+            "SELECT id FROM tracks WHERE path = :path",
+            {"path": "/test/fixtures/music/song.mp3"},
         ).fetchone()
         assert row["id"] == seeded_library["track_id"]
 
