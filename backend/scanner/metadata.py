@@ -75,15 +75,21 @@ SUFFIX_TO_MIME = {
 }
 
 
-def extract(path: str) -> TrackMetadata:
+def extract(path: str, extract_art: bool = False) -> TrackMetadata:
     """
     Extract metadata for a single file. Always returns a TrackMetadata; never raises.
 
     Order of attempts: mutagen → ffprobe → filename. Each fills missing fields
     rather than overwriting good data from a higher-priority source.
+
+    `extract_art` controls whether to pull embedded artwork. Default False —
+    the scanner's main loop skips art entirely and a dedicated per-album
+    phase re-extracts from one representative track per album. The recovery
+    path (admin "Recover artwork") and any caller that needs art for one
+    specific file passes extract_art=True.
     """
     meta = TrackMetadata()
-    _try_mutagen(path, meta)
+    _try_mutagen(path, meta, extract_art=extract_art)
     if meta.duration is None or meta.title == "Unknown":
         _try_ffprobe(path, meta)
     if meta.title == "Unknown":
@@ -95,14 +101,29 @@ def extract(path: str) -> TrackMetadata:
 # Mutagen
 # ---------------------------------------------------------------------------
 
-def _try_mutagen(path: str, meta: TrackMetadata) -> None:
+def _try_mutagen(path: str, meta: TrackMetadata, extract_art: bool = False) -> None:
     """
     Pull tags via mutagen. Different formats expose tags through different
-    APIs; we use the high-level easy=True interface where possible and fall
-    through for art/duration which need format-specific handling.
+    APIs; we use the high-level easy=True interface, which gives us tag
+    access AND streaminfo (duration, bitrate) from a single file open.
+
+    By default we DO NOT extract embedded artwork. The scanner runs a
+    dedicated per-album artwork phase after track metadata is committed
+    (see scanner._run_local_artwork_phase) which is dramatically cheaper:
+    a 10-track album reads its embedded-art block once instead of ten
+    times. On a virtiofs- or SMB-backed library where embedded FLAC
+    artwork can be megabytes per file, this is the biggest single
+    speedup to a full library scan.
+
+    Callers that DO need the art (e.g. the per-album recovery phase
+    extracting from a representative track) pass extract_art=True, in
+    which case we re-open the file without easy=True to access the
+    underlying tags / pictures attribute. That second open is paid for
+    by exactly one track per album rather than every track.
     """
     try:
-        # easy=True gives us a uniform dict of common tags.
+        # easy=True gives us a uniform dict of common tags AND .info
+        # (streaminfo). One file open, two pieces of useful data.
         mf = MutagenFile(path, easy=True)
     except (ID3NoHeaderError, Exception):
         return
@@ -126,7 +147,8 @@ def _try_mutagen(path: str, meta: TrackMetadata) -> None:
     disc_no = first("discnumber")
     date = first("date") or first("year")
     # FLAC/Vorbis exposes this as 'releasetype' through the easy interface.
-    # ID3 and MP4 don't, so we also probe the raw tags below.
+    # ID3 and MP4 don't, so the recovery-phase re-open path probes raw
+    # tags via _extract_release_type below when extract_art=True.
     release_type = first("releasetype") or first("musicbrainz_albumtype")
     # MusicBrainz identifiers. Names are standardised across the formats
     # mutagen knows about (Vorbis comments, EasyID3, EasyMP4 expose them
@@ -152,29 +174,29 @@ def _try_mutagen(path: str, meta: TrackMetadata) -> None:
     if mb_artist:        meta.musicbrainz_artist_id = mb_artist
     if mb_albumartist:   meta.musicbrainz_albumartist_id = mb_albumartist
 
-    # Reload without easy=True to get streaminfo + embedded art.
-    try:
-        mf_full = MutagenFile(path)
-        if mf_full is not None:
-            info = getattr(mf_full, "info", None)
-            if info is not None:
-                if hasattr(info, "length") and info.length:
-                    meta.duration = int(info.length)
-                if hasattr(info, "bitrate") and info.bitrate:
-                    meta.bitrate = int(info.bitrate / 1000)
+    # Streaminfo is on the same object — no second open needed.
+    info = getattr(mf, "info", None)
+    if info is not None:
+        if hasattr(info, "length") and info.length:
+            meta.duration = int(info.length)
+        if hasattr(info, "bitrate") and info.bitrate:
+            meta.bitrate = int(info.bitrate / 1000)
 
-            # Embedded art lives in different places per format. Cover the
-            # common ones; bail on anything weird.
-            art = _extract_embedded_art(mf_full)
-            if art is not None:
-                meta.has_embedded_art = True
-                meta.art_data = art
-
-            # Release type via raw tags — covers ID3 TXXX and MP4 ----.
-            if meta.release_type is None:
-                meta.release_type = _extract_release_type(mf_full)
-    except Exception:
-        pass
+    # Embedded art and the ID3-TXXX / MP4-`----` release-type fallback
+    # both need raw (non-easy) tags. Only re-open when the caller asked
+    # for art — the regular scan path defers this to the per-album phase.
+    if extract_art:
+        try:
+            mf_full = MutagenFile(path)
+            if mf_full is not None:
+                art = _extract_embedded_art(mf_full)
+                if art is not None:
+                    meta.has_embedded_art = True
+                    meta.art_data = art
+                if meta.release_type is None:
+                    meta.release_type = _extract_release_type(mf_full)
+        except Exception:
+            pass
 
 
 def _normalise_release_type(value: str) -> Optional[str]:

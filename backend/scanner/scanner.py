@@ -198,7 +198,11 @@ def _run_recover_inner() -> None:
              and has no sidecar art.
         """
         try:
-            meta = metadata.extract(path)
+            # extract_art=True forces the embedded-art read that the
+            # regular scan path skips. Cheap here because this code path
+            # only runs for albums missing cover_art_id (typically a
+            # tiny subset).
+            meta = metadata.extract(path, extract_art=True)
             art = meta.art_data
             if art is None:
                 art = artwork.find_folder_artwork(path)
@@ -406,27 +410,141 @@ def _run_scan_inner() -> None:
 
     _progress.current_folder = None
 
-    if _cancel_event.is_set():
-        log.info("scan: cancelled")
-    else:
-        # Routine GC: prune dangling references and orphan artwork files now
-        # that the scan is settled. Cheap; finishes in well under a second.
-        # We deliberately don't VACUUM here — that's expensive and only worth
-        # it occasionally; users can trigger it from /api/maintenance/gc.
-        try:
-            from backend.db.maintenance import run_gc
-            run_gc(vacuum=False)
-        except Exception:
-            # GC failures must never poison a successful scan.
-            log.exception("post-scan GC failed (non-fatal)")
+    try:
+        if _cancel_event.is_set():
+            log.info("scan: cancelled")
+        else:
+            # Per-album artwork. The track-parsing pass deliberately skipped
+            # embedded-art extraction (see _parse_one) because reading the
+            # same multi-MB FLAC PICTURE block 10× per album is the dominant
+            # cost on virtiofs / SMB libraries. We now have all tracks in
+            # the DB; pick ONE track per album-missing-art and extract from
+            # that. Local-only — no Deezer fallback (slow network). The user
+            # can still trigger the full recover-with-Deezer path via the
+            # admin button.
+            try:
+                _run_local_artwork_phase()
+            except Exception:
+                log.exception("post-scan local artwork phase failed (non-fatal)")
 
-    _progress.running = False
-    _progress.finished_at = time.time()
-    log.info(
-        "scan complete: +%d ~%d -%d skipped=%d errors=%d",
-        _progress.files_added, _progress.files_updated,
-        _progress.files_removed, _progress.files_skipped, _progress.errors,
-    )
+            # Routine GC: prune dangling references and orphan artwork files
+            # now that the scan is settled. Cheap; finishes in well under a
+            # second. We deliberately don't VACUUM here — that's expensive
+            # and only worth it occasionally; users can trigger it from
+            # /api/maintenance/gc.
+            try:
+                from backend.db.maintenance import run_gc
+                run_gc(vacuum=False)
+            except Exception:
+                # GC failures must never poison a successful scan.
+                log.exception("post-scan GC failed (non-fatal)")
+    finally:
+        # Always clear `running` — the folder-delete handler and the UI
+        # rely on this flag to know the scanner is idle. A scan that
+        # exits via an exception without resetting this would leave the
+        # whole app thinking a scan is still in progress.
+        _progress.running = False
+        _progress.finished_at = time.time()
+        log.info(
+            "scan complete: +%d ~%d -%d skipped=%d errors=%d",
+            _progress.files_added, _progress.files_updated,
+            _progress.files_removed, _progress.files_skipped, _progress.errors,
+        )
+
+
+def _run_local_artwork_phase() -> int:
+    """
+    Extract artwork for albums whose cover_art_id is NULL, reading ONLY
+    local sources (embedded tags + folder cover.jpg). Returns the count
+    of albums for which artwork was recovered.
+
+    Strategy: pick ONE representative track per album, open it with
+    extract_art=True, store the art, stamp the album. A 10-track album
+    therefore costs ~1× the artwork I/O of the old per-track design.
+
+    No network fallbacks here. The admin "Recover artwork" action
+    (_run_recover_inner) covers the Deezer path for libraries with no
+    embedded or folder art at all.
+
+    Honours _cancel_event so a long extraction can be aborted by the
+    same scan-cancel call the main loop uses.
+    """
+    settings = get_settings()
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT a.id AS album_id, MIN(t.path) AS track_path
+          FROM albums a
+          JOIN tracks t ON t.album_id = a.id
+         WHERE a.cover_art_id IS NULL
+      GROUP BY a.id
+        HAVING MIN(t.path) IS NOT NULL
+        """
+    ).fetchall()
+    targets: List[tuple] = [(row["album_id"], row["track_path"]) for row in rows]
+    if not targets:
+        return 0
+
+    log.info("local-artwork: %d albums need cover art", len(targets))
+
+    def _extract(album_id: int, path: str) -> Optional[tuple]:
+        try:
+            meta = metadata.extract(path, extract_art=True)
+            art = meta.art_data
+            if art is None:
+                art = artwork.find_folder_artwork(path)
+            if art is not None:
+                return (album_id, art)
+        except Exception as e:
+            log.debug("local-artwork: extract failed for %s: %s", path, e)
+        return None
+
+    pool = ThreadPoolExecutor(max_workers=settings.scanner_workers)
+    pending: List[tuple] = []
+    batch_size = max(50, settings.scanner_batch_size)
+    recovered = 0
+
+    def _commit(batch: List[tuple]) -> None:
+        nonlocal recovered
+        if not batch:
+            return
+        with transaction():
+            for album_id, art_bytes in batch:
+                try:
+                    cover_id = artwork.store_artwork(art_bytes)
+                except OSError as e:
+                    log.debug("local-artwork: store_artwork failed: %s", e)
+                    continue
+                if cover_id:
+                    queries.set_album_cover_art(album_id, cover_id)
+                    recovered += 1
+
+    try:
+        futures = [pool.submit(_extract, aid, path) for aid, path in targets]
+        for fut in as_completed(futures):
+            if _cancel_event.is_set():
+                for f in futures:
+                    f.cancel()
+                break
+            try:
+                result = fut.result()
+            except Exception as e:
+                log.debug("local-artwork: worker failed: %s", e)
+                continue
+            if result is not None:
+                pending.append(result)
+                if len(pending) >= batch_size:
+                    _commit(pending)
+                    pending = []
+    finally:
+        pool.shutdown(wait=not _cancel_event.is_set())
+
+    if pending:
+        _commit(pending)
+
+    log.info("local-artwork: recovered %d/%d albums", recovered, len(targets))
+    return recovered
 
 
 def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
@@ -684,29 +802,15 @@ def _parse_one(path: str, st, folder_id: int) -> Dict[str, Any]:
     (like _artist, _album) carry raw name strings. The main thread is the only
     one that converts those names to database IDs via upsert_artist/upsert_album,
     because SQLite only allows one writer at a time.
+
+    Artwork is intentionally NOT extracted here. On a FLAC library every
+    track on an album holds the same multi-MB embedded picture block;
+    reading and decoding it 10× per album is the dominant scan cost on
+    network-backed or virtiofs-backed mounts. The scanner runs a separate
+    per-album extraction phase after track commits (see
+    _run_local_artwork_phase) which touches one file per album instead.
     """
-    meta = metadata.extract(path)
-
-    # If no embedded art, look for cover.jpg etc next to the file.
-    art_data = meta.art_data
-    if art_data is None:
-        art_data = artwork.find_folder_artwork(path)
-
-    # Hash + write the artwork file HERE in the worker thread, NOT later
-    # inside the main thread's transaction. Reason: artwork can be several
-    # MB of FLAC-embedded JPEG. Doing the disk write inside the per-batch
-    # SQLite transaction keeps the write lock open for as long as the slow
-    # filesystem takes, which on NAS-backed setups means seconds — long
-    # enough to make every concurrent API write (e.g. login) time out.
-    # store_artwork() is idempotent on identical bytes, so the race
-    # between workers writing the same hash is harmless.
-    art_id: Optional[str] = None
-    if art_data is not None:
-        try:
-            art_id = artwork.store_artwork(art_data)
-        except OSError as e:
-            log.debug("scan: store_artwork failed for %s: %s", path, e)
-        art_data = None  # release reference; bytes can be multi-MB
+    meta = metadata.extract(path)  # extract_art=False (default)
 
     suffix = Path(path).suffix.lstrip(".").lower()
     return {
@@ -726,8 +830,12 @@ def _parse_one(path: str, st, folder_id: int) -> Dict[str, Any]:
         "genre":        meta.genre,
         "suffix":       suffix,
         "content_type": metadata.get_content_type(suffix),
-        # Pre-stored on disk by the worker; _commit just stamps the hash.
-        "art_id":       art_id,
+        # Artwork is stamped per-album by _run_local_artwork_phase after
+        # all tracks are committed. The key is preserved as None so the
+        # _commit batch-handler's set_album_cover_art branch is skipped
+        # rather than removed (the recovery / migration paths could
+        # eventually populate it again here if we change strategy).
+        "art_id":       None,
         # MBIDs — _commit threads these through the relevant upsert helpers.
         # Underscored to distinguish them from columns persisted directly.
         "_mb_track_id":       meta.musicbrainz_track_id,
