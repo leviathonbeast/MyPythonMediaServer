@@ -140,6 +140,13 @@ def _run_recover_artwork() -> None:
     init_thread_connection(_SCANNER_CACHE_PAGES)
     try:
         _run_recover_inner()
+    except Exception:
+        # Make sure an unhandled exception in the recovery worker
+        # doesn't leave the UI showing "running" forever. The progress
+        # block is also restamped to a terminal state.
+        log.exception("recover-artwork: worker failed")
+        _recover_progress.running = False
+        _recover_progress.finished_at = time.time()
     finally:
         _recover_cancel.clear()
         _recover_lock.release()
@@ -160,6 +167,13 @@ def _run_recover_inner() -> None:
     )
 
     settings = get_settings()
+    # HAVING references the aggregate directly (MIN(t.path)) rather than
+    # its alias. SQLite allows alias references inside HAVING but Postgres
+    # follows standard SQL — only grouped columns and aggregates are in
+    # scope there. The INNER JOIN already guarantees we only see albums
+    # with at least one track, so this HAVING is defensive against a
+    # future LEFT JOIN refactor; either way it must use the aggregate
+    # form to work on both dialects.
     rows = (
         get_conn()
         .execute(
@@ -169,13 +183,17 @@ def _run_recover_inner() -> None:
                  JOIN tracks t ON t.album_id = a.id
             LEFT JOIN artists ar ON ar.id = a.artist_id
                 WHERE a.cover_art_id IS NULL
-             GROUP BY a.id
-               HAVING track_path IS NOT NULL"""
+             GROUP BY a.id, ar.name
+               HAVING MIN(t.path) IS NOT NULL"""
         )
         .fetchall()
     )
+    # Named access — positional row[0] etc. raises KeyError on psycopg's
+    # dict_row factory. sqlite3.Row supports both indexing modes; named
+    # works on either, positional only works on SQLite.
     targets: List[tuple] = [
-        (row[0], row[1] or "", row[2] or "", row[3]) for row in rows
+        (row["id"], row["album_name"] or "", row["artist_name"] or "", row["track_path"])
+        for row in rows
     ]
     _recover_progress.albums_total = len(targets)
 
