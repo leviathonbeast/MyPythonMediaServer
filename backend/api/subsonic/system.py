@@ -66,17 +66,23 @@ def get_music_folders(ctx: SubsonicContext = Depends(subsonic_context)) -> Respo
 
 # ---- getOpenSubsonicExtensions ------------------------------------------------------
 @_double_register("getOpenSubsonicExtensions")
-def get_open_subsonic_extensions(request: Request) -> Response:
+def get_open_subsonic_extensions(
+    f: Optional[str] = Query(default="json"),
+    callback: Optional[str] = Query(default=None),
+) -> Response:
     """
     Publicly accessible (no auth required) endpoint that advertises which
     OpenSubsonic extensions this server supports.
     """
     extensions = [
-        {"name": "httpFormPost", "versions": [1]},
+        {"name": "formPost", "versions": [1]},
+        {"name": "indexBasedQueue", "versions": [1]},
     ]
+
     return responses.ok(
         {"openSubsonicExtensions": extensions},
-        fmt="json",
+        fmt=f,
+        callback=callback,
     )
 
 
