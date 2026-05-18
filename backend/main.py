@@ -23,6 +23,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -252,24 +253,35 @@ if _dist.is_dir():
 
     _dist_root = _dist.resolve()
 
-    @app.get("/web/{path:path}", include_in_schema=False)
-    async def spa_fallback(path: str):
-        """Serve matching files from dist, fall back to index.html for SPA routing.
+    def _safe_dist_path(path: str) -> Optional[Path]:
+        """Resolve `path` under `_dist` and return the absolute path iff it
+        stays inside the dist root and points at an existing file.
 
-        `path:path` does not strip `..` segments, and uvicorn passes raw URLs
-        through. Without an explicit containment check, a request like
-        `/web/../backend/config/settings.py` would resolve outside `dist` and
-        FileResponse would happily serve it. Resolve and verify the candidate
-        stays inside `dist` before handing it to FileResponse.
+        Returns None when the candidate escapes the dist root or doesn't
+        exist. Extracted for direct testing — TestClient/httpx normalise
+        `..` before the request hits the server, so an HTTP-level test
+        cannot exercise this containment check. The unit test in
+        test_security.py calls this function directly with attacker-shaped
+        paths.
         """
         candidate = (_dist / path).resolve()
         try:
             candidate.relative_to(_dist_root)
         except ValueError:
-            # Escaped the dist root — treat as SPA route, serve index.html.
-            return FileResponse(str(_dist / "index.html"))
-        if candidate.is_file():
-            return FileResponse(str(candidate))
+            return None  # escaped dist root
+        if not candidate.is_file():
+            return None
+        return candidate
+
+    # Expose for tests. Underscore-prefixed so it's not a public API.
+    app.state._safe_dist_path = _safe_dist_path  # type: ignore[attr-defined]
+
+    @app.get("/web/{path:path}", include_in_schema=False)
+    async def spa_fallback(path: str):
+        """Serve matching files from dist, fall back to index.html for SPA routing."""
+        safe = _safe_dist_path(path)
+        if safe is not None:
+            return FileResponse(str(safe))
         return FileResponse(str(_dist / "index.html"))
 
 
