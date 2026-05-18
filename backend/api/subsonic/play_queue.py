@@ -136,3 +136,43 @@ def save_play_queue_by_index(
         )
 
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
+
+
+@_double_register("getPlayQueueByIndex")
+def get_play_queue_by_index(
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+    payload = queries.get_play_queue(ctx.user_id)
+
+    if payload is None:
+        return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
+
+    # Resolve currentIndex:
+    #   1. Prefer the value stored by savePlayQueueByIndex (current_position).
+    #   2. Fall back to locating current_id within the queue, for queues
+    #      saved by the legacy savePlayQueue path (which doesn't populate
+    #      current_position). This fallback picks the FIRST occurrence and
+    #      is lossy on duplicates — but legacy clients couldn't
+    #      disambiguate them either, so the answer matches their model.
+    current_index = payload.get("current_position")
+    if current_index is None and payload.get("current_id") is not None:
+        for i, t in enumerate(payload["tracks"]):
+            if t["id"] == payload["current_id"]:
+                current_index = i
+                break
+
+    play_queue_by_index = {
+        "currentIndex": current_index if current_index is not None else 0,
+        "position": payload["position_ms"],
+        "username": payload["owner"],
+        "changed": datetime.fromtimestamp(
+            payload["changed_at"], tz=timezone.utc
+        ).isoformat(),
+        "changedBy": payload["changed_by"],
+        "entry": [library.track_to_subsonic(t) for t in payload["tracks"]],
+    }
+    return responses.ok(
+        {"playQueueByIndex": play_queue_by_index},
+        fmt=ctx.fmt,
+        callback=ctx.callback,
+    )

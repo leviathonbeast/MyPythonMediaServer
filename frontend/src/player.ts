@@ -19,7 +19,7 @@ import type { SubsonicSong } from "./api";
 import {
   subsonic, coverArtUrl, streamUrl, getTranscodingPolicy, getTranscodingPrefs,
   resolveStreamPlan, type TranscodingPolicy,
-  getPlayQueue, savePlayQueue,
+  getPlayQueueByIndex, savePlayQueueByIndex,
 } from "./api";
 
 type Listener = (state: PlayerState) => void;
@@ -187,15 +187,15 @@ class Player {
   private async restore(): Promise<void> {
     this.suppressSave = true;
     try {
-      const pq = await getPlayQueue();
+      const pq = await getPlayQueueByIndex();
       const entries = pq?.entry ?? [];
       if (entries.length === 0) return;
 
       this.queue = entries;
-      // Find the index of the saved "current" track. Fall back to 0 if not found.
-      const currentId = pq?.current;
-      const idx = currentId ? this.queue.findIndex(t => t.id === currentId) : 0;
-      this.index = idx >= 0 ? idx : 0;
+      // Use the saved index directly — no findIndex on track id, so a
+      // duplicate-track queue resumes on the right occurrence.
+      const saved = pq?.currentIndex ?? 0;
+      this.index = saved >= 0 && saved < this.queue.length ? saved : 0;
 
       const track = this.queue[this.index];
       if (track) {
@@ -214,13 +214,15 @@ class Player {
 
   private async save(): Promise<void> {
     if (this.suppressSave || this.queue.length === 0) return;
-    const track = this.queue[this.index];
     const ids = this.queue.map(t => t.id);
+    // index is -1 when nothing has played yet; the byIndex spec wants a
+    // valid index whenever the queue is non-empty, so pin to 0.
+    const idx = this.index >= 0 && this.index < this.queue.length ? this.index : 0;
     const positionMs = Math.floor((this.audio.currentTime || 0) * 1000);
     try {
-      await savePlayQueue(ids, track?.id ?? null, positionMs);
+      await savePlayQueueByIndex(ids, idx, positionMs);
     } catch (err) {
-      console.warn("savePlayQueue failed:", err);
+      console.warn("savePlayQueueByIndex failed:", err);
     }
   }
 

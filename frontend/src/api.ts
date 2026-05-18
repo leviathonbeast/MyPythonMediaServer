@@ -625,46 +625,69 @@ export async function deletePlaylist(playlistId: string | number): Promise<void>
   await subsonic<unknown>("deletePlaylist", { playlist_id: String(playlistId) });
 }
 
-/* ---------- Play queue (Subsonic savePlayQueue / getPlayQueue) ---------- */
+/* ---------- Play queue (OpenSubsonic byIndex variants) ---------- */
+
+// We use the OpenSubsonic byIndex pair because the legacy savePlayQueue
+// passes the "currently playing" pointer as a track id, which can't
+// disambiguate duplicates: a queue [A, B, A] with the second A playing
+// round-trips as "currently A" and resumes on the first A. The byIndex
+// pair carries the integer queue position instead, which is unambiguous.
+//
+// The legacy SubsonicPlayQueue type is kept around in case anything else
+// in the codebase wants it; player.ts only uses the byIndex flow.
 
 export interface SubsonicPlayQueue {
-  current?: string;     // current track id (e.g. "tr-123")
-  position?: number;    // playback position in milliseconds
+  current?: string;        // current track id (e.g. "tr-123"); legacy shape
+  position?: number;       // playback position in milliseconds
   username?: string;
-  changed?: string;     // ISO timestamp
-  changedBy?: string;   // client name
+  changed?: string;        // ISO timestamp
+  changedBy?: string;      // client name
   entry?: SubsonicSong[];
 }
 
-export async function getPlayQueue(): Promise<SubsonicPlayQueue | null> {
-  const env = await subsonic<{ playQueue?: SubsonicPlayQueue }>("getPlayQueue");
-  return env.playQueue ?? null;
+export interface SubsonicPlayQueueByIndex {
+  currentIndex?: number;   // 0-based index into entry[]
+  position?: number;       // playback position in milliseconds
+  username?: string;
+  changed?: string;        // ISO timestamp
+  changedBy?: string;      // client name
+  entry?: SubsonicSong[];
+}
+
+export async function getPlayQueueByIndex(): Promise<SubsonicPlayQueueByIndex | null> {
+  const env = await subsonic<{ playQueueByIndex?: SubsonicPlayQueueByIndex }>(
+    "getPlayQueueByIndex",
+  );
+  return env.playQueueByIndex ?? null;
 }
 
 /**
  * Save the user's play queue. Track ids are sent as repeated `id=` params, so
  * like createPlaylist we build the URL by hand rather than going through subsonic().
+ *
+ * `currentIndex` must be in range [0, trackIds.length); the server returns
+ * error code 10 otherwise. Pass null when clearing the queue (empty trackIds).
  */
-export async function savePlayQueue(
+export async function savePlayQueueByIndex(
   trackIds: string[],
-  current: string | null,
+  currentIndex: number | null,
   positionMs: number,
 ): Promise<void> {
   const params = subsonicAuthParams();
   for (const tid of trackIds) params.append("id", tid);
-  if (current) params.set("current", current);
+  if (currentIndex !== null) params.set("currentIndex", String(currentIndex));
   params.set("position", String(Math.max(0, Math.floor(positionMs))));
-  const res = await fetch(`/rest/savePlayQueue.view?${params.toString()}`, {
+  const res = await fetch(`/rest/savePlayQueueByIndex.view?${params.toString()}`, {
     credentials: "same-origin",
   });
   if (!res.ok) {
     if (res.status === 401) signOut();
-    throw new Error(`HTTP ${res.status} on savePlayQueue`);
+    throw new Error(`HTTP ${res.status} on savePlayQueueByIndex`);
   }
   const body = await res.json();
   const env = body["subsonic-response"];
   if (env?.status === "failed") {
-    throw new Error(env.error?.message ?? "savePlayQueue failed");
+    throw new Error(env.error?.message ?? "savePlayQueueByIndex failed");
   }
 }
 
