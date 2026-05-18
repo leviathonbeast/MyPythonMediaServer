@@ -142,6 +142,50 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+# Subsonic formPost extension support.
+#
+# OpenSubsonic's `formPost` extension lets clients send API params
+# (including auth: u, t, s) in an application/x-www-form-urlencoded POST
+# body instead of the URL query string. FastAPI's Query() annotations
+# only read from request.query_params, so without this merge every
+# form-encoded POST fails auth with "Missing 'u' parameter" — even
+# though we advertise the extension in getOpenSubsonicExtensions.
+#
+# We modify scope["query_string"] before routing so every existing
+# Query() annotation transparently picks up body params. No per-handler
+# change needed.
+#
+# Scope-limited to /rest/* because /api/* uses JSON bodies parsed via
+# Pydantic, and consuming the body here would prevent that.
+from urllib.parse import urlencode, parse_qsl
+
+
+@app.middleware("http")
+async def _subsonic_form_post(request, call_next):
+    if (
+        request.method == "POST"
+        and request.url.path.startswith("/rest/")
+        and request.headers.get("content-type", "").startswith(
+            "application/x-www-form-urlencoded"
+        )
+    ):
+        body = await request.body()
+        if body:
+            form_pairs = parse_qsl(
+                body.decode("utf-8", errors="replace"),
+                keep_blank_values=True,
+            )
+            if form_pairs:
+                existing = parse_qsl(
+                    request.scope["query_string"].decode("utf-8", errors="replace"),
+                    keep_blank_values=True,
+                )
+                request.scope["query_string"] = urlencode(
+                    existing + form_pairs
+                ).encode("utf-8")
+    return await call_next(request)
+
+
 # Security headers. The SPA stores its JWT in localStorage (it has to —
 # Subsonic-style URL auth makes HttpOnly cookies a non-starter), so the
 # blast radius of a single XSS is total. A reasonable CSP makes injection

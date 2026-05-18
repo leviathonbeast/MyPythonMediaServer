@@ -198,3 +198,41 @@ class TestStarNoneIdSkip:
     def test_garbage_id_does_not_500(self, client):
         r = sub(client, "star", id="not-a-real-id")
         ok(r)  # status=ok envelope; row silently skipped
+
+
+# ---------------------------------------------------------------------------
+# OpenSubsonic formPost extension (main.py:_subsonic_form_post)
+# ---------------------------------------------------------------------------
+
+class TestFormPostBodyParams:
+    """Subsonic params in a POST body must be visible to Query() handlers.
+
+    We advertise the `formPost` extension in getOpenSubsonicExtensions, so
+    clients (Feishin, Symfonium when configured) send auth + params in the
+    request body with application/x-www-form-urlencoded. FastAPI's Query()
+    only reads the URL query string by default — without the middleware
+    merging body→query the entire Subsonic API is "Missing 'u' parameter"
+    for any form-encoded POST.
+    """
+
+    def test_form_body_auth_succeeds(self, client):
+        # Auth params live in the BODY, not the URL — exactly how Feishin
+        # sends them when formPost is enabled. The handler should still
+        # see u/p/v/c/f via the merge middleware.
+        r = client.post(
+            "/rest/ping.view",
+            data={"u": "admin", "p": "adminpass", "v": "1.16.1", "c": "t", "f": "json"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        ok(r)  # status=ok — would be code 10 "Missing 'u'" without the merge
+
+    def test_form_body_does_not_clobber_query_string(self, client):
+        # Mixed mode: auth in query string, content params in body.
+        # Both must reach the handler. Star with a bogus id is the cheapest
+        # round-trip that exercises a non-auth body param.
+        r = client.post(
+            "/rest/star.view?u=admin&p=adminpass&v=1.16.1&c=t&f=json",
+            data={"id": "not-a-real-id"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        ok(r)
