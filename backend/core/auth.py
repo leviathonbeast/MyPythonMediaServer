@@ -43,6 +43,37 @@ from backend.db import queries, transaction
 
 logger = logging.getLogger(__name__)
 
+# Pre-computed bcrypt hash of a random string. Used as a constant-time
+# decoy when the username doesn't exist: callers always run a bcrypt
+# verification of the submitted password, either against the real hash
+# or this one. Without this, "user exists, wrong password" returns in
+# ~100 ms while "user doesn't exist" returns instantly — a classic
+# username-enumeration timing oracle on the login endpoint.
+#
+# Generated once at import time; the actual plaintext is unknowable
+# (random secrets.token_urlsafe input), so verify_password against
+# any submitted plaintext is guaranteed to return False.
+import secrets as _secrets
+_DUMMY_HASH = bcrypt.hashpw(
+    _secrets.token_urlsafe(32).encode("utf-8"),
+    bcrypt.gensalt(rounds=12),
+).decode("utf-8")
+
+
+def verify_password_or_dummy(plaintext: str, hashed: Optional[str]) -> bool:
+    """Like verify_password, but always pays the bcrypt cost.
+
+    When `hashed` is None (user not found), we still run bcrypt against
+    a fixed decoy hash so the total response time is indistinguishable
+    from a real-user / wrong-password path. The return value is False
+    in the decoy case, same as a real mismatch.
+    """
+    if hashed is None:
+        bcrypt.checkpw(plaintext.encode("utf-8"), _DUMMY_HASH.encode("utf-8"))
+        return False
+    return verify_password(plaintext, hashed)
+
+
 # In-process cache: (username, plaintext_password) → (user_dict, expiry_timestamp).
 #
 # WHY: bcrypt is intentionally slow (that's the point — it makes brute-force

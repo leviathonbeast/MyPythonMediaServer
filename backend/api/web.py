@@ -113,8 +113,16 @@ class FolderAddRequest(BaseModel):
 @router.post("/auth/login", response_model=LoginResponse)
 @limiter.limit(get_settings().auth_rate_limits)
 def login(body: LoginRequest, request: Request):
+    # verify_password_or_dummy always runs bcrypt — once against the real
+    # hash if the user exists, once against a constant decoy hash if not.
+    # That removes the username-enumeration timing oracle: response time
+    # is the same for "no such user" and "user exists, wrong password".
     user = queries.get_user_by_username(body.username)
-    if user is None or not auth_core.verify_password(body.password, user["password_hash"]):
+    password_ok = auth_core.verify_password_or_dummy(
+        body.password,
+        user["password_hash"] if user else None,
+    )
+    if user is None or user.get("disabled") or not password_ok:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Warm the plaintext cache so that the Subsonic token+salt auth flow works
