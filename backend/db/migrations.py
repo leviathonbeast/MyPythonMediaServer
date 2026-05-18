@@ -72,6 +72,14 @@ def _migration_002_seed_admin(conn: sqlite3.Connection) -> None:
     if cur.fetchone()["n"] > 0:
         return  # already seeded — never touch existing users
 
+    if not settings.admin_password:
+        raise RuntimeError(
+            "First-run setup requires MUSE_ADMIN_PASSWORD (or admin_password "
+            "in config.yaml). Refusing to seed an admin user with a default "
+            "password — that's how home servers end up trivially owned. "
+            "Set the env var and restart."
+        )
+
     now = int(time.time())
     conn.execute(
         """

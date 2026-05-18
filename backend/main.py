@@ -91,11 +91,21 @@ async def lifespan(app: FastAPI):
 
     _DEFAULT_SECRET = "muse-dev-secret-change-me"
     if settings.jwt_secret == _DEFAULT_SECRET:
-        log.warning(
-            "SECURITY: jwt_secret is set to the default development value. "
-            "Set MUSE_JWT_SECRET (or jwt_secret in config.yaml) to a long random "
-            "string before exposing this server to the internet."
-        )
+        # On loopback-only binds we leave this as a warning so the dev loop
+        # keeps working. Anywhere else (including 0.0.0.0) it's a hard error
+        # because the default secret is public source: anyone can mint admin
+        # JWTs and the Fernet key for encrypted_password is derived from it.
+        if settings.host in ("127.0.0.1", "localhost", "::1"):
+            log.warning(
+                "SECURITY: jwt_secret is the default dev value — fine for "
+                "localhost binds, but change it before exposing the server."
+            )
+        else:
+            raise RuntimeError(
+                "Refusing to start: jwt_secret is the default development "
+                "value but host is not loopback. Set MUSE_JWT_SECRET to a "
+                "long random string (e.g. `openssl rand -hex 48`)."
+            )
 
     if settings.scan_on_startup:
         log.info("Triggering startup scan")
@@ -129,6 +139,42 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Security headers. The SPA stores its JWT in localStorage (it has to —
+# Subsonic-style URL auth makes HttpOnly cookies a non-starter), so the
+# blast radius of a single XSS is total. A reasonable CSP makes injection
+# meaningfully harder; the rest are cheap baseline hardening.
+#
+# img-src allows https: because cover art for albums-without-local-art
+# falls back to Deezer's CDN ([library.py:561](backend/api/web.py)),
+# and connect-src allows the same so fetch() to last.fm / deezer works
+# from the artist page enrichment paths.
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "img-src 'self' data: https:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self' https:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'",
+    )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    # HSTS is only meaningful over TLS. Setting it unconditionally is fine —
+    # browsers ignore it on plaintext responses. Two-year max-age + preload
+    # is the conventional production value.
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+    )
+    return response
+
 
 # CORS — only matters when the dev frontend (Vite, port 5173) hits the API
 # on a different origin. In production, the frontend is served by the same
@@ -204,10 +250,24 @@ if _dist.is_dir():
             callback=ctx.callback,
         )
 
+    _dist_root = _dist.resolve()
+
     @app.get("/web/{path:path}", include_in_schema=False)
     async def spa_fallback(path: str):
-        """Serve matching files from dist, fall back to index.html for SPA routing."""
-        candidate = _dist / path
+        """Serve matching files from dist, fall back to index.html for SPA routing.
+
+        `path:path` does not strip `..` segments, and uvicorn passes raw URLs
+        through. Without an explicit containment check, a request like
+        `/web/../backend/config/settings.py` would resolve outside `dist` and
+        FileResponse would happily serve it. Resolve and verify the candidate
+        stays inside `dist` before handing it to FileResponse.
+        """
+        candidate = (_dist / path).resolve()
+        try:
+            candidate.relative_to(_dist_root)
+        except ValueError:
+            # Escaped the dist root — treat as SPA route, serve index.html.
+            return FileResponse(str(_dist / "index.html"))
         if candidate.is_file():
             return FileResponse(str(candidate))
         return FileResponse(str(_dist / "index.html"))

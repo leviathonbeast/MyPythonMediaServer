@@ -135,8 +135,14 @@ class Settings(BaseSettings):
     # Initial admin credentials. These are used to bootstrap the user table on
     # first run. They are NOT re-applied on subsequent runs (so changing them
     # later won't reset the admin password — that's intentional).
+    #
+    # `admin_password` has no default on purpose: shipping a known default
+    # ("admin") combined with the default 0.0.0.0 bind is how home servers
+    # end up trivially owned. When unset on first run the migration refuses
+    # to seed the admin user and the operator must set MUSE_ADMIN_PASSWORD
+    # (or admin_password in config.yaml) before starting.
     admin_username: str = Field(default="admin")
-    admin_password: str = Field(default="admin")
+    admin_password: Optional[str] = Field(default=None)
 
     # ---- Scanner -----------------------------------------------------------
     # Extensions we even bother to look at. Anything else is skipped at the
