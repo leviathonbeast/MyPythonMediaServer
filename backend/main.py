@@ -61,6 +61,50 @@ logging.basicConfig(
 log = logging.getLogger("muse")
 
 
+class _AccessLogTrimmer(logging.Filter):
+    """Tidy uvicorn's access logs at INFO level and above.
+
+    Two changes:
+
+    1. **Strip the query string from logged URLs.** Subsonic clients put
+       auth (u, t, s) and parameters in the URL, so the default uvicorn
+       access log records tokens, salts, and usernames on every line.
+       That's leaky (logs, reverse proxies, ops tooling all see creds)
+       and verbose. The path alone is plenty for operational debugging.
+
+    2. **Drop successful requests on high-volume endpoints.** Cover-art
+       fetches, ping, and scrobble fire constantly during normal use and
+       drown out signal. 4xx/5xx responses on the same endpoints still
+       pass through, so errors stay visible.
+
+    Skipped entirely when MUSE_LOG_LEVEL=DEBUG so debugging sessions see
+    the unfiltered firehose (full URLs with params, every cover-art hit).
+    """
+
+    _NOISY = ("/rest/getCoverArt", "/rest/ping", "/rest/scrobble")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        client, method, full_path, http_version, status = args
+        if not isinstance(full_path, str):
+            return True
+
+        path = full_path.split("?", 1)[0]
+        is_success = isinstance(status, int) and 200 <= status < 400
+        if is_success and any(path.startswith(p) for p in self._NOISY):
+            return False  # silently drop
+
+        # Visible: strip the query string from the URL.
+        record.args = (client, method, path, http_version, status)
+        return True
+
+
+if _settings.log_level.upper() != "DEBUG":
+    logging.getLogger("uvicorn.access").addFilter(_AccessLogTrimmer())
+
+
 def _redact_db_url(url: str) -> str:
     """Mask the password component of a database URL for safe logging.
 
