@@ -35,6 +35,8 @@ from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from backend.core import auth as auth_core
+from backend.core import throttle as auth_throttle
+from backend.db import queries
 from . import responses
 
 
@@ -54,6 +56,11 @@ def jwt_user(
     """
     Verify a JWT Bearer token. Returns the payload (sub, username, is_admin).
     Raises 401 if the token is missing or invalid.
+
+    Also revokes tokens whose backing user has been disabled or deleted.
+    Without this, an admin who disables a user has to wait up to
+    `jwt_expiry_hours` (default 24h) before that user actually loses
+    access — which is the opposite of what "disable" implies.
     """
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(
@@ -66,6 +73,24 @@ def jwt_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
+
+    # Refetch the account on every request so disable/delete takes effect
+    # immediately. One indexed lookup per request, negligible compared to
+    # the rest of any real endpoint.
+    try:
+        user_id = int(payload.get("sub", ""))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Malformed token subject",
+        )
+    db_user = queries.get_user_by_id(user_id)
+    if db_user is None or db_user.get("disabled"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account disabled or removed",
+        )
+
     return payload
 
 
@@ -135,9 +160,22 @@ def subsonic_context(
     if not u:
         raise SubsonicAuthError(responses.ERR_PARAMETER, "Missing 'u' parameter", fmt, callback)
 
+    # Throttle BEFORE bcrypt so a brute-forcer can't keep us busy on the
+    # rejection path. Keyed by (client_ip, username) so one attacker
+    # grinding one user doesn't lock other clients on the same NAT.
+    # Throttled requests return the same error code as a wrong password,
+    # which keeps "is this account being attacked" indistinguishable from
+    # the normal authentication failure path.
+    client_ip = request.client.host if request.client else "unknown"
+    if auth_throttle.is_blocked(client_ip, u):
+        raise SubsonicAuthError(responses.ERR_AUTH, "Wrong username or password", fmt, callback)
+
     user = auth_core.verify_subsonic_credentials(u, password=p, token=t, salt=s)
     if user is None:
+        auth_throttle.record_failure(client_ip, u)
         raise SubsonicAuthError(responses.ERR_AUTH, "Wrong username or password", fmt, callback)
+
+    auth_throttle.record_success(client_ip, u)
 
     return SubsonicContext(
         user_id=user["id"],

@@ -1398,22 +1398,34 @@ def search3(
             {"query": query, "limit": song_count, "offset": song_offset},
         ).fetchall()
     else:
-        songs = conn.execute(
-            """
-            SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
-                   t.track_number, t.year, t.genre, t.path,
-                   t.musicbrainz_id,
-                   t.artist_id, ar.name AS artist_name,
-                   t.album_id, al.name AS album_name, al.cover_art_id
-              FROM tracks t
-              JOIN virt_fts5 f  ON f.rowid = t.id
-         LEFT JOIN artists ar   ON ar.id = t.artist_id
-         LEFT JOIN albums  al   ON al.id = t.album_id
-             WHERE virt_fts5 MATCH :query
-             LIMIT :limit OFFSET :offset
-            """,
-            {"query": query, "limit": song_count, "offset": song_offset},
-        ).fetchall()
+        # FTS5 accepts a small query language (NEAR, AND, OR, prefix `*`,
+        # quoted phrases). Passing the raw user input means a query like
+        # `"unterminated` or `NEAR` raises sqlite3.OperationalError, which
+        # propagates as a 500 and is a trivial DoS / log-flooder. Wrap the
+        # whole thing as a phrase: any double-quote inside is doubled per
+        # FTS5's quoting rule, so the result is one safe phrase literal.
+        fts_query = '"' + query.replace('"', '""') + '"'
+        try:
+            songs = conn.execute(
+                """
+                SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                       t.track_number, t.year, t.genre, t.path,
+                       t.musicbrainz_id,
+                       t.artist_id, ar.name AS artist_name,
+                       t.album_id, al.name AS album_name, al.cover_art_id
+                  FROM tracks t
+                  JOIN virt_fts5 f  ON f.rowid = t.id
+             LEFT JOIN artists ar   ON ar.id = t.artist_id
+             LEFT JOIN albums  al   ON al.id = t.album_id
+                 WHERE virt_fts5 MATCH :query
+                 LIMIT :limit OFFSET :offset
+                """,
+                {"query": fts_query, "limit": song_count, "offset": song_offset},
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # FTS5 still rejects the input (e.g. an empty phrase): degrade
+            # gracefully to an empty result rather than 500ing.
+            songs = []
 
     return {
         "artists": _rows_to_dicts(artists),

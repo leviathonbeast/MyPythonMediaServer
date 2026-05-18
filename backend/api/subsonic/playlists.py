@@ -181,8 +181,14 @@ def update_playlist(
 
         queries.update_playlist(playlistId, name, comment, public)
         if songIdToAdd:
-            track_ids = [library.parse_id(sid)[1] for sid in songIdToAdd]
-            queries.add_tracks_to_playlist(playlistId, track_ids)
+            # Drop any id we can't parse so a single garbage value doesn't
+            # poison the whole update with a NULL track_id INSERT.
+            track_ids = [
+                rid for rid in (library.parse_id(sid)[1] for sid in songIdToAdd)
+                if rid is not None
+            ]
+            if track_ids:
+                queries.add_tracks_to_playlist(playlistId, track_ids)
         if songIndexToRemove:
             queries.remove_tracks_from_playlist(playlistId, songIndexToRemove)
     return responses.ok(

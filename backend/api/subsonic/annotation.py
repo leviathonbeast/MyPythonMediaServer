@@ -185,14 +185,20 @@ def star(
     with transaction():
         for sid in id:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.star_item(ctx.user_id, "track", rid)
 
         for sid in albumId:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.star_item(ctx.user_id, "album", rid)
 
         for sid in artistId:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.star_item(ctx.user_id, "artist", rid)
 
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
@@ -209,14 +215,20 @@ def unstar(
     with transaction():
         for sid in id:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.unstar_item(ctx.user_id, "track", rid)
 
         for sid in albumId:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.unstar_item(ctx.user_id, "album", rid)
 
         for sid in artistId:
             _, rid = library.parse_id(sid)
+            if rid is None:
+                continue
             queries.unstar_item(ctx.user_id, "artist", rid)
 
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)

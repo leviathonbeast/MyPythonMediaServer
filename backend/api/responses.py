@@ -41,12 +41,21 @@ WHY a builder rather than per-endpoint hand-coding:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, Optional
 from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import Response
 
 from backend.config import get_settings
+
+# JSONP callback must be a plain JS identifier (optionally dotted, e.g.
+# `window.foo` for a method on a namespaced object). Anything else is
+# injection territory: a callback of `alert(1);//` would render the
+# response as `alert(1);//(...);` and execute when included via
+# `<script src=...>`. Capped at 64 chars because a real JSONP callback
+# is at most a function name.
+_JSONP_CALLBACK_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$.]{0,63}")
 
 
 # Standard Subsonic error codes — clients decide what to show based on these.
@@ -98,8 +107,10 @@ def _build(inner: Dict[str, Any], fmt: str, callback: Optional[str]) -> Response
 
     body = json.dumps({"subsonic-response": envelope}, separators=(",", ":"))
 
-    if fmt == "jsonp" and callback:
+    if fmt == "jsonp" and callback and _JSONP_CALLBACK_RE.fullmatch(callback):
         # JSONP: the response is callback(<json>); content-type is JS.
+        # A non-matching callback silently falls through to plain JSON —
+        # safer than echoing attacker-controlled text into a JS body.
         return Response(content=f"{callback}({body});", media_type="application/javascript")
 
     return Response(content=body, media_type="application/json")
