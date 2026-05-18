@@ -12,7 +12,7 @@ import {
   type SubsonicAlbum, type SubsonicSong,
 } from "../api";
 import { player, fmtDuration } from "../player";
-import { escapeHtml, albumPlaceholder, renderArtistLinks } from "./_util";
+import { escapeHtml, albumPlaceholder, renderArtistLinks, attachLazyLoad } from "./_util";
 
 const PAGE = 40;
 
@@ -170,42 +170,48 @@ function wireSongClicks(host: HTMLElement): void {
 
 function wireLoadMore(host: HTMLElement, genre: string): void {
   const albumBtn = host.querySelector<HTMLButtonElement>("[data-load-more-albums]");
-  albumBtn?.addEventListener("click", async () => {
-    albumBtn.disabled = true;
-    albumBtn.textContent = "Loading…";
-    try {
-      const more = await getAlbumList("byGenre", PAGE, albumOffset, { genre });
-      albumOffset += more.length;
-      host.querySelector("[data-album-list]")!
-        .insertAdjacentHTML("beforeend", more.map(albumCardHtml).join(""));
-      const countEl = host.querySelector("[data-album-count]");
-      if (countEl) countEl.textContent = String(albumOffset);
-      if (more.length < PAGE) albumBtn.remove();
-      else { albumBtn.disabled = false; albumBtn.textContent = "Load more albums"; }
-    } catch {
-      albumBtn.disabled = false;
-      albumBtn.textContent = "Load more albums";
-    }
-  });
+  if (albumBtn) {
+    albumBtn.addEventListener("click", async () => {
+      albumBtn.disabled = true;
+      albumBtn.textContent = "Loading…";
+      try {
+        const more = await getAlbumList("byGenre", PAGE, albumOffset, { genre });
+        albumOffset += more.length;
+        host.querySelector("[data-album-list]")!
+          .insertAdjacentHTML("beforeend", more.map(albumCardHtml).join(""));
+        const countEl = host.querySelector("[data-album-count]");
+        if (countEl) countEl.textContent = String(albumOffset);
+        if (more.length < PAGE) albumBtn.remove();
+        else { albumBtn.disabled = false; albumBtn.textContent = "Load more albums"; }
+      } catch {
+        albumBtn.disabled = false;
+        albumBtn.textContent = "Load more albums";
+      }
+    });
+    attachLazyLoad(albumBtn);
+  }
 
   const songBtn = host.querySelector<HTMLButtonElement>("[data-load-more-songs]");
-  songBtn?.addEventListener("click", async () => {
-    songBtn.disabled = true;
-    songBtn.textContent = "Loading…";
-    try {
-      const more = await getSongsByGenre(genre, PAGE, songOffset);
-      const startIdx = accSongs.length;
-      accSongs.push(...more);
-      songOffset += more.length;
-      host.querySelector<HTMLTableSectionElement>("[data-songs] tbody")!
-        .insertAdjacentHTML("beforeend", more.map((s, i) => songRowHtml(s, startIdx + i)).join(""));
-      const countEl = host.querySelector("[data-song-count]");
-      if (countEl) countEl.textContent = String(songOffset);
-      if (more.length < PAGE) songBtn.remove();
-      else { songBtn.disabled = false; songBtn.textContent = "Load more tracks"; }
-    } catch {
-      songBtn.disabled = false;
-      songBtn.textContent = "Load more tracks";
-    }
-  });
+  if (songBtn) {
+    songBtn.addEventListener("click", async () => {
+      songBtn.disabled = true;
+      songBtn.textContent = "Loading…";
+      try {
+        const more = await getSongsByGenre(genre, PAGE, songOffset);
+        const startIdx = accSongs.length;
+        accSongs.push(...more);
+        songOffset += more.length;
+        host.querySelector<HTMLTableSectionElement>("[data-songs] tbody")!
+          .insertAdjacentHTML("beforeend", more.map((s, i) => songRowHtml(s, startIdx + i)).join(""));
+        const countEl = host.querySelector("[data-song-count]");
+        if (countEl) countEl.textContent = String(songOffset);
+        if (more.length < PAGE) songBtn.remove();
+        else { songBtn.disabled = false; songBtn.textContent = "Load more tracks"; }
+      } catch {
+        songBtn.disabled = false;
+        songBtn.textContent = "Load more tracks";
+      }
+    });
+    attachLazyLoad(songBtn);
+  }
 }

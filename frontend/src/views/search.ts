@@ -6,7 +6,7 @@
 
 import { search3, coverArtUrl, type SubsonicArtist, type SubsonicAlbum, type SubsonicSong } from "../api";
 import { player, fmtDuration } from "../player";
-import { escapeHtml, albumPlaceholder, renderArtistLinks } from "./_util";
+import { escapeHtml, albumPlaceholder, renderArtistLinks, attachLazyLoad } from "./_util";
 
 const SEARCH_PAGE = 20;
 
@@ -234,61 +234,70 @@ function wireSongClicks(host: HTMLElement): void {
 
 function wireLoadMore(host: HTMLElement, q: string): void {
   const artistBtn = host.querySelector<HTMLButtonElement>("[data-load-more-artists]");
-  artistBtn?.addEventListener("click", async () => {
-    artistBtn.disabled = true;
-    artistBtn.textContent = "Loading…";
-    try {
-      const r = await search3(q, { artistCount: SEARCH_PAGE, albumCount: 0, songCount: 0, artistOffset });
-      artistOffset += r.artist.length;
-      host.querySelector("[data-artist-list]")!
-        .insertAdjacentHTML("beforeend", r.artist.map(artistItemHtml).join(""));
-      const countEl = host.querySelector("[data-artist-count]");
-      if (countEl) countEl.textContent = String(artistOffset);
-      if (r.artist.length < SEARCH_PAGE) artistBtn.remove();
-      else { artistBtn.disabled = false; artistBtn.textContent = "Load more artists"; }
-    } catch {
-      artistBtn.disabled = false;
-      artistBtn.textContent = "Load more artists";
-    }
-  });
+  if (artistBtn) {
+    artistBtn.addEventListener("click", async () => {
+      artistBtn.disabled = true;
+      artistBtn.textContent = "Loading…";
+      try {
+        const r = await search3(q, { artistCount: SEARCH_PAGE, albumCount: 0, songCount: 0, artistOffset });
+        artistOffset += r.artist.length;
+        host.querySelector("[data-artist-list]")!
+          .insertAdjacentHTML("beforeend", r.artist.map(artistItemHtml).join(""));
+        const countEl = host.querySelector("[data-artist-count]");
+        if (countEl) countEl.textContent = String(artistOffset);
+        if (r.artist.length < SEARCH_PAGE) artistBtn.remove();
+        else { artistBtn.disabled = false; artistBtn.textContent = "Load more artists"; }
+      } catch {
+        artistBtn.disabled = false;
+        artistBtn.textContent = "Load more artists";
+      }
+    });
+    attachLazyLoad(artistBtn);
+  }
 
   const albumBtn = host.querySelector<HTMLButtonElement>("[data-load-more-albums]");
-  albumBtn?.addEventListener("click", async () => {
-    albumBtn.disabled = true;
-    albumBtn.textContent = "Loading…";
-    try {
-      const r = await search3(q, { artistCount: 0, albumCount: SEARCH_PAGE, songCount: 0, albumOffset });
-      albumOffset += r.album.length;
-      host.querySelector("[data-album-list]")!
-        .insertAdjacentHTML("beforeend", r.album.map(albumCardHtml).join(""));
-      const countEl = host.querySelector("[data-album-count]");
-      if (countEl) countEl.textContent = String(albumOffset);
-      if (r.album.length < SEARCH_PAGE) albumBtn.remove();
-      else { albumBtn.disabled = false; albumBtn.textContent = "Load more albums"; }
-    } catch {
-      albumBtn.disabled = false;
-      albumBtn.textContent = "Load more albums";
-    }
-  });
+  if (albumBtn) {
+    albumBtn.addEventListener("click", async () => {
+      albumBtn.disabled = true;
+      albumBtn.textContent = "Loading…";
+      try {
+        const r = await search3(q, { artistCount: 0, albumCount: SEARCH_PAGE, songCount: 0, albumOffset });
+        albumOffset += r.album.length;
+        host.querySelector("[data-album-list]")!
+          .insertAdjacentHTML("beforeend", r.album.map(albumCardHtml).join(""));
+        const countEl = host.querySelector("[data-album-count]");
+        if (countEl) countEl.textContent = String(albumOffset);
+        if (r.album.length < SEARCH_PAGE) albumBtn.remove();
+        else { albumBtn.disabled = false; albumBtn.textContent = "Load more albums"; }
+      } catch {
+        albumBtn.disabled = false;
+        albumBtn.textContent = "Load more albums";
+      }
+    });
+    attachLazyLoad(albumBtn);
+  }
 
   const songBtn = host.querySelector<HTMLButtonElement>("[data-load-more-songs]");
-  songBtn?.addEventListener("click", async () => {
-    songBtn.disabled = true;
-    songBtn.textContent = "Loading…";
-    try {
-      const r = await search3(q, { artistCount: 0, albumCount: 0, songCount: SEARCH_PAGE, songOffset });
-      const startIdx = accSongs.length;
-      accSongs.push(...r.song);
-      songOffset += r.song.length;
-      host.querySelector<HTMLTableSectionElement>("[data-songs] tbody")!
-        .insertAdjacentHTML("beforeend", r.song.map((s, i) => songRowHtml(s, startIdx + i)).join(""));
-      const countEl = host.querySelector("[data-song-count]");
-      if (countEl) countEl.textContent = String(songOffset);
-      if (r.song.length < SEARCH_PAGE) songBtn.remove();
-      else { songBtn.disabled = false; songBtn.textContent = "Load more tracks"; }
-    } catch {
-      songBtn.disabled = false;
-      songBtn.textContent = "Load more tracks";
-    }
-  });
+  if (songBtn) {
+    songBtn.addEventListener("click", async () => {
+      songBtn.disabled = true;
+      songBtn.textContent = "Loading…";
+      try {
+        const r = await search3(q, { artistCount: 0, albumCount: 0, songCount: SEARCH_PAGE, songOffset });
+        const startIdx = accSongs.length;
+        accSongs.push(...r.song);
+        songOffset += r.song.length;
+        host.querySelector<HTMLTableSectionElement>("[data-songs] tbody")!
+          .insertAdjacentHTML("beforeend", r.song.map((s, i) => songRowHtml(s, startIdx + i)).join(""));
+        const countEl = host.querySelector("[data-song-count]");
+        if (countEl) countEl.textContent = String(songOffset);
+        if (r.song.length < SEARCH_PAGE) songBtn.remove();
+        else { songBtn.disabled = false; songBtn.textContent = "Load more tracks"; }
+      } catch {
+        songBtn.disabled = false;
+        songBtn.textContent = "Load more tracks";
+      }
+    });
+    attachLazyLoad(songBtn);
+  }
 }

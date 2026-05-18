@@ -5,7 +5,7 @@
 // something visually rich to chew on instead of an empty index.
 
 import { getAlbumList, coverArtUrl, type SubsonicAlbum } from "../api";
-import { escapeHtml, albumPlaceholder } from "./_util";
+import { escapeHtml, albumPlaceholder, attachLazyLoad } from "./_util";
 
 type SortMode = "newest" | "alphabeticalByName" | "byYear" | "random";
 
@@ -102,6 +102,7 @@ async function load(grid: HTMLElement, replace: boolean): Promise<void> {
     btn.textContent = "Load more";
     btn.addEventListener("click", () => void load(grid, false));
     grid.appendChild(btn);
+    attachLazyLoad(btn);
   }
 }
 

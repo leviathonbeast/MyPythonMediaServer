@@ -3,6 +3,39 @@
 // Tiny helpers shared by view modules. Kept underscore-prefixed so it's
 // obvious these aren't routes.
 
+/**
+ * Auto-trigger a "Load more" button when it scrolls into view.
+ *
+ * Replaces manual page-by-page clicking with infinite-scroll behaviour
+ * while keeping the button in the DOM as a fallback (no-JS, older
+ * browsers without IntersectionObserver, keyboard-only navigation, and
+ * an honest visual cue during fetches).
+ *
+ * The button's existing `disabled` state during in-flight loads acts as
+ * the debouncer — if the observer fires repeatedly while the user
+ * scrolls, every dispatch after the first is a no-op until the loader
+ * re-enables the button. When the button removes itself at end-of-data
+ * the observer goes idle naturally.
+ *
+ * `rootMargin: 200px` triggers the next page just before the button
+ * itself reaches the viewport, so successive pages feel seamless rather
+ * than stuttery as the user scrolls.
+ */
+export function attachLazyLoad(button: HTMLButtonElement): void {
+  if (!("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting && !button.disabled && button.isConnected) {
+          button.click();
+        }
+      }
+    },
+    { rootMargin: "200px" },
+  );
+  observer.observe(button);
+}
+
 /** HTML-escape user-supplied text before interpolating into innerHTML. */
 export function escapeHtml(s: string | null | undefined): string {
   if (s === null || s === undefined) return "";
