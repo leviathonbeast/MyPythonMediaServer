@@ -120,12 +120,18 @@ def _migration_003_seed_music_folders(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_004_add_current_pos_to_play_queues(conn: sqlite3.Connection) -> None:
+    """ALTER TABLE play_queues ADD COLUMN current_position INTEGER."""
+    conn.execute("ALTER TABLE play_queues ADD COLUMN current_position INTEGER")
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 # Future schema changes start at version 4.
 MIGRATIONS: List[Migration] = [
     (1, _migration_001_initial),
     (2, _migration_002_seed_admin),
     (3, _migration_003_seed_music_folders),
+    (4, _migration_004_add_current_pos_to_play_queues),
 ]
 
 
@@ -151,9 +157,7 @@ def _current_version(conn: sqlite3.Connection) -> int:
         )
     if cur.fetchone() is None:
         return 0
-    cur = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) AS v FROM schema_version"
-    )
+    cur = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_version")
     return int(cur.fetchone()["v"])
 
 
