@@ -238,3 +238,65 @@ def get_auth_token() -> str:
     if not token:
         raise RuntimeError("Missing token in Last.fm response")
     return token
+
+
+def build_auth_url(token: str) -> str:
+    settings = get_settings()
+    return f"{LASTFM_AUTH_URL}?api_key={settings.lastfm_api_key}&token={token}"
+
+
+def get_session(token: str) -> dict:
+    """Exchange the approved token for a permanent session_key + username.
+
+    Returns the `session` sub-object from Last.fm's response:
+        {"name": "<lastfm-username>", "key": "<permanent-session-key>", "subscriber": 0}
+    """
+    settings = get_settings()
+
+    if not settings.lastfm_api_key or not settings.lastfm_api_secret:
+        raise RuntimeError("Last.fm api_key + api_secret must both be configured")
+
+    params = {
+        "method": "auth.getSession",
+        "api_key": settings.lastfm_api_key,
+        "token": token,
+    }
+
+    params["api_sig"] = _sign(params, settings.lastfm_api_secret)
+    params["format"] = "json"
+
+    url = "https://ws.audioscrobbler.com/2.0/"
+
+    data_bytes = urllib.parse.urlencode(params).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=data_bytes,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "your-app-name/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to contact Last.fm API: {exc}") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON response from Last.fm: {body}") from exc
+
+    if "error" in data:
+        raise RuntimeError(
+            f"Last.fm API error {data.get('error')}: {data.get('message')}"
+        )
+
+    session = data.get("session")
+    if not session:
+        raise RuntimeError("Missing session in Last.fm response")
+
+    return session
