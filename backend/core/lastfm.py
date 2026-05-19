@@ -40,6 +40,9 @@ log = logging.getLogger(__name__)
 _LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/"
 _USER_AGENT = "Muse/0.1 (+https://github.com/your-org/muse)"
 
+LASTFM_API_ROOT = "https://ws.audioscrobbler.com/2.0/"
+LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
+
 # How long a successful bio fetch is reused without re-querying Last.fm.
 # 24h is a deliberate trade-off: bios are mostly static, and we'd rather
 # under-fetch than risk hitting rate limits during a busy library browse.
@@ -192,3 +195,46 @@ def _sign(params: dict[str, str], secret: str) -> str:
     ]
 
     return hashlib.md5(("".join(parts) + secret).encode("utf-8")).hexdigest()
+
+
+# LAST FM REQUEST TEMPORARY TOKEN CONSUMED BY getSession
+
+
+def get_auth_token() -> str:
+    """Request a one of token"""
+    settings = get_settings()
+    if not settings.lastfm_api_key or not settings.lastfm_api_secret:
+        raise RuntimeError(
+            "last.fm api_key + api_secret must be configured in settings"
+        )
+    params = {
+        "method": "auth.getToken",
+        "api_key": settings.lastfm_api_key,
+    }
+    params["api_sig"] = _sign(params, settings.lastfm_api_secret)
+    params["format"] = "json"
+    # Use whatever HTTP client the rest of this file already uses.
+    # Return data["token"] — raise on missing.
+    # https://ws.audioscrobbler.com/2.0/method=auth.getToken&api_key=...
+    url = LASTFM_API_ROOT + "?" + urllib.parse.urlencode(params)
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to contact Last.fm API: {exc}") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON response from Last.fm: {body}") from exc
+
+    if "error" in data:
+        raise RuntimeError(
+            f"Last.fm API error {data.get('error')}: {data.get('message')}"
+        )
+
+    token = data.get("token")
+    if not token:
+        raise RuntimeError("Missing token in Last.fm response")
+    return token
