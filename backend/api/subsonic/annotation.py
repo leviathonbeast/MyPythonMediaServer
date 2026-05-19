@@ -155,32 +155,34 @@ def scrobble(
     acct = queries.get_external_account(ctx.user_id, queries.SERVICE_LASTFM)
     if acct is not None and background_tasks is not None:
         session_key = acct["auth_token"]
-    if submission:
-        for i, rid in enumerate(resolved):
-            track = queries.get_track(rid)
-            if track is None:
-                continue
-            ts = (time[i] // 1000) if (time and i < len(time)) else int(_time.time())
-            background_tasks.add_task(
-                lastfm.scrobble_track,
-                session_key,
-                artist=track.get("artist_name") or "",
-                title=track["title"],
-                album=track.get("album_name"),
-                mbid=track.get("musicbrainz_id"),
-                timestamp=ts,
-            )
-    elif resolved:
-        track = queries.get_track(resolved[0])
-        if track is not None:
-            background_tasks.add_task(
-                lastfm.update_now_playing,
-                session_key,
-                artist=track.get("artist_name") or "",
-                title=track["title"],
-                album=track.get("album_name"),
-                mbid=track.get("musicbrainz_id"),
-            )
+        if submission:
+            for i, rid in enumerate(resolved):
+                track = queries.get_track(rid)
+                if track is None:
+                    continue
+                ts = (
+                    (time[i] // 1000) if (time and i < len(time)) else int(_time.time())
+                )
+                background_tasks.add_task(
+                    lastfm.scrobble_track,
+                    session_key,
+                    artist=track.get("artist_name") or "",
+                    title=track["title"],
+                    album=track.get("album_name"),
+                    mbid=track.get("musicbrainz_id"),
+                    timestamp=ts,
+                )
+        elif resolved:
+            track = queries.get_track(resolved[0])
+            if track is not None:
+                background_tasks.add_task(
+                    lastfm.update_now_playing,
+                    session_key,
+                    artist=track.get("artist_name") or "",
+                    title=track["title"],
+                    album=track.get("album_name"),
+                    mbid=track.get("musicbrainz_id"),
+                )
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 
