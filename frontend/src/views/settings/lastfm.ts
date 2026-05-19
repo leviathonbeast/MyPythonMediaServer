@@ -107,10 +107,12 @@ export async function renderLastfmSection(host: HTMLElement): Promise<LastfmSect
         try {
           const { auth_url, token } = await lastfmConnect();
           sessionStorage.setItem(PENDING_TOKEN_KEY, token);
-          // Where last.fm should send the user after approval. The
-          // section's refresh() picks up the pending token from
-          // sessionStorage on mount and finishes the flow.
-          const cb = `${window.location.origin}/web/#/settings`;
+          // No-hash cb URL on purpose: Last.fm strips URL fragments
+          // ("#/settings") from cb params, so the SPA would land at
+          // the root anyway. main.ts checks sessionStorage on every
+          // boot and reroutes to #/settings when a pending token is
+          // present, so we get there regardless.
+          const cb = `${window.location.origin}/web/`;
           window.location.href = `${auth_url}&cb=${encodeURIComponent(cb)}`;
         } catch (e) {
           window.alert(`Couldn't start Last.fm flow: ${(e as Error).message}`);

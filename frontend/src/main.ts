@@ -175,6 +175,18 @@ async function navigate(): Promise<void> {
   location.hash = "#/";
 }
 
+// Last.fm OAuth-return interception. Last.fm strips URL fragments from
+// its cb param, so even when we ask for `…/web/#/settings` it redirects
+// to `…/web/?token=…` at the root. If a pending Last.fm token is in
+// sessionStorage when the SPA boots, force the user to the settings
+// page — the lastfm section's refresh() then completes the exchange.
+// Without this, the SPA would land on the default route and the
+// pending token would sit unused until the user manually navigated.
+if (sessionStorage.getItem("muse.lastfm.pending-token") &&
+    !location.hash.startsWith("#/settings")) {
+  location.hash = "#/settings";
+}
+
 window.addEventListener("hashchange", () => { void navigate(); });
 window.addEventListener("DOMContentLoaded", () => { void navigate(); });
 // In case the script ran after DOMContentLoaded (Vite HMR / ESM):
