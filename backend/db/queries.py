@@ -45,6 +45,61 @@ def normalize_sort_name(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# lastm/listenbrainz/spotify auth for scrobble
+# ---------------------------------------------------------------------------
+# Service name constants — use these from callers, never bare strings.
+SERVICE_LASTFM = "lastfm"
+SERVICE_LISTENBRAINZ = "listenbrainz"
+SERVICE_SPOTIFY = "spotify"
+
+
+def get_external_account(user_id: int, service: str) -> Optional[dict[str, Any]]:
+    row = (
+        get_conn()
+        .execute(
+            """
+        SELECT auth_token, username, linked_at
+        FROM user_external_accounts WHERE user_id = :user_id AND service = :service
+""",
+            {"user_id": user_id, "service": service},
+        )
+        .fetchone()
+    )
+    return _row_to_dict(row)
+
+
+def set_external_account(
+    user_id: int, service: str, auth_token: str, username: Optional[str]
+) -> None:
+    """insert or replace users auth token for given service"""
+    get_conn().execute(
+        """
+    INSERT INTO user_external_accounts (user_id, service, auth_token, username, linked_at) VALUES
+    (:user_id, :service, :auth_token, :username, :linked_at
+    )ON CONFLICT (user_id, service) DO UPDATE SET
+    auth_token = excluded.auth_token,
+    username = excluded.username, 
+    linked_at = excluded.linked_at
+    """,
+        {
+            "user_id": user_id,
+            "service": service,
+            "auth_token": auth_token,
+            "username": username,
+            "linked_at": int(time.time()),
+        },
+    )
+
+
+def delete_external_account(user_id: int, service: str) -> bool:
+    cur = get_conn().execute(
+        """ DELETE FROM user_external_accounts WHERE user_id = :user_id AND service = :service """,
+        {"user_id": user_id, "service": service},
+    )
+    return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

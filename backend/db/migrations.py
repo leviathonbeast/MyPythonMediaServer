@@ -125,6 +125,15 @@ def _migration_004_add_current_pos_to_play_queues(conn: sqlite3.Connection) -> N
     conn.execute("ALTER TABLE play_queues ADD COLUMN current_position INTEGER")
 
 
+def _migration_user_external_accounts(conn: sqlite3.Connection) -> None:
+    """LAST FM scrobble"""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_external_accounts(user_id INTEGER NOT NULL, service TEXT NOT NULL, 
+        auth_token TEXT NOT NULL, username TEXT, linked_at INTEGER NOT NULL, PRIMARY KEY (user_id, service), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+
+        """)
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 # Future schema changes start at version 4.
 MIGRATIONS: List[Migration] = [
@@ -132,6 +141,7 @@ MIGRATIONS: List[Migration] = [
     (2, _migration_002_seed_admin),
     (3, _migration_003_seed_music_folders),
     (4, _migration_004_add_current_pos_to_play_queues),
+    (5, _migration_user_external_accounts),
 ]
 
 
