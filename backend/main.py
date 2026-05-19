@@ -248,7 +248,13 @@ async def _security_headers(request, call_next):
         "img-src 'self' data: https:; "
         "media-src 'self' blob:; "
         "connect-src 'self' https:; "
-        "style-src 'self' 'unsafe-inline'; "
+        # Google Fonts: stylesheet served from fonts.googleapis.com,
+        # the actual woff2 files from fonts.gstatic.com. Both narrowly
+        # whitelisted rather than opening style-src/font-src to https:
+        # generally. If you ever self-host the fonts, both entries
+        # can come back out.
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
         "object-src 'none'; "
         "frame-ancestors 'none'; "
         "base-uri 'self'",
