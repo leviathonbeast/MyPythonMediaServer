@@ -300,3 +300,91 @@ def get_session(token: str) -> dict:
         raise RuntimeError("Missing session in Last.fm response")
 
     return session
+
+
+def _post_to_lastfm(params: dict[str, str]) -> dict[str, any]:
+    """POST signed params, return parsed JSON. Raises on transport/API errors."""
+    body = urllib.parse.urlencode(params).encode("utf-8")
+    req = urllib.request.Request(
+        LASTFM_API_ROOT,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to contact Last.fm: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON from Last.fm: {exc}") from exc
+    if "error" in data:
+        raise RuntimeError(f"Last.fm error {data['error']}: {data.get('message')}")
+    return data
+
+
+def scrobble_track(
+    session_key: str,
+    *,
+    artist: str,
+    title: str,
+    album: Optional[str] = None,
+    mbid: Optional[str] = None,
+    timestamp: int,
+) -> None:
+    """Submit a permanent scrobble. Errors logged, never raised — the user's
+    playback already happened, nothing actionable on a failure."""
+    if not artist or not title:
+        return  # Last.fm rejects empty artist/track with code 6
+    settings = get_settings()
+    params = {
+        "method": "track.scrobble",
+        "api_key": settings.lastfm_api_key,
+        "sk": session_key,
+        "artist": artist,
+        "track": title,
+        "timestamp": str(timestamp),
+    }
+    if album:
+        params["album"] = album
+    if mbid:
+        params["mbid"] = mbid
+    params["api_sig"] = _sign(params, settings.lastfm_api_secret)
+    params["format"] = "json"
+    try:
+        _post_to_lastfm(params)
+    except Exception:
+        log.warning("lastfm scrobble failed: %s — %s", artist, title, exc_info=True)
+
+
+def update_now_playing(
+    session_key: str,
+    *,
+    artist: str,
+    title: str,
+    album: Optional[str] = None,
+    mbid: Optional[str] = None,
+) -> None:
+    """Tell Last.fm what's currently playing. Transient — they show it in
+    'recently scrobbled' but don't permanently record it. Errors logged."""
+    if not artist or not title:
+        return
+    settings = get_settings()
+    params = {
+        "method": "track.updateNowPlaying",
+        "api_key": settings.lastfm_api_key,
+        "sk": session_key,
+        "artist": artist,
+        "track": title,
+    }
+    if album:
+        params["album"] = album
+    if mbid:
+        params["mbid"] = mbid
+    params["api_sig"] = _sign(params, settings.lastfm_api_secret)
+    params["format"] = "json"
+    try:
+        _post_to_lastfm(params)
+    except Exception:
+        log.warning(
+            "lastfm updateNowPlaying failed: %s — %s", artist, title, exc_info=True
+        )
