@@ -73,6 +73,7 @@ limiter = Limiter(key_func=get_remote_address)
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -110,6 +111,7 @@ class FolderAddRequest(BaseModel):
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post("/auth/login", response_model=LoginResponse)
 @limiter.limit(get_settings().auth_rate_limits)
 def login(body: LoginRequest, request: Request):
@@ -132,7 +134,9 @@ def login(body: LoginRequest, request: Request):
     auth_core._verify_with_password(body.username, body.password)
 
     token = auth_core.create_jwt(user)
-    return LoginResponse(token=token, username=user["username"], is_admin=bool(user["is_admin"]))
+    return LoginResponse(
+        token=token, username=user["username"], is_admin=bool(user["is_admin"])
+    )
 
 
 @router.get("/me")
@@ -141,7 +145,9 @@ def me(user=Depends(jwt_user)):
     db_user = queries.get_user_by_id(int(user["sub"]))
     if db_user is None:
         # Token outlived the account — treat as unauth so the SPA logs out.
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account no longer exists")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Account no longer exists"
+        )
     return {
         **user,
         "created_at": db_user.get("created_at"),
@@ -153,21 +159,94 @@ def me(user=Depends(jwt_user)):
 def change_own_password(body: PasswordChangeRequest, user: dict = Depends(jwt_user)):
     """Change the calling user's own password after verifying the current one."""
     db_user = queries.get_user_by_username(user["username"])
-    if db_user is None or not auth_core.verify_password(body.current_password, db_user["password_hash"]):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if db_user is None or not auth_core.verify_password(
+        body.current_password, db_user["password_hash"]
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
     if not body.new_password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must not be empty")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must not be empty",
+        )
     with transaction():
-        queries.update_user_password(db_user["id"], auth_core.hash_password(body.new_password))
-        queries.update_encrypted_password(db_user["id"], auth_core.encrypt_password(body.new_password))
+        queries.update_user_password(
+            db_user["id"], auth_core.hash_password(body.new_password)
+        )
+        queries.update_encrypted_password(
+            db_user["id"], auth_core.encrypt_password(body.new_password)
+        )
     # Refresh in-memory cache so token+salt auth works immediately.
     auth_core._last_plaintext[user["username"]] = body.new_password
     return {"updated": True}
 
 
+# LAST FM STUFF
+
+
+class LastfmCompleteRequest(BaseModel):
+    token: str
+
+
+@router.get("/me/lastfm")
+def lastfm_status(user: dict = Depends(jwt_user)):
+    """Return whether the current user has Last.fm linked, and as whom."""
+    acct = queries.get_external_account(int(user["sub"]), queries.SERVICE_LASTFM)
+    if acct is None:
+        return {"linked": False}
+    return {"linked": True, "username": acct.get("username")}
+
+
+@router.post("/me/lastfm/connect")
+def lastfm_connect(_user: dict = Depends(jwt_user)):
+    """Step 1 of the OAuth-like flow: get a token + the URL to redirect to."""
+    try:
+        token = lastfm.get_auth_token()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"auth_url": lastfm.build_auth_url(token), "token": token}
+
+
+@router.post("/me/lastfm/complete")
+def lastfm_complete(
+    body: LastfmCompleteRequest,
+    user: dict = Depends(jwt_user),
+):
+    """Step 2: user has approved on last.fm; exchange the token for a session."""
+    try:
+        session = lastfm.get_session(body.token)
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=400, detail=f"Last.fm token exchange failed: {e}"
+        )
+
+    with transaction():
+        queries.set_external_account(
+            int(user["sub"]),
+            queries.SERVICE_LASTFM,
+            auth_token=session["key"],
+            username=session["name"],
+        )
+    return {"linked": True, "username": session["name"]}
+
+
+@router.delete("/me/lastfm")
+def lastfm_disconnect(user: dict = Depends(jwt_user)):
+    """Forget the user's Last.fm session. Cannot revoke it remotely — the user
+    has to do that on last.fm's website if they want to fully sever the link."""
+    with transaction():
+        was_linked = queries.delete_external_account(
+            int(user["sub"]), queries.SERVICE_LASTFM
+        )
+    return {"linked": False, "was_linked": was_linked}
+
+
 # ---------------------------------------------------------------------------
 # Library stats
 # ---------------------------------------------------------------------------
+
 
 @router.get("/stats")
 def stats(_=Depends(jwt_user)):
@@ -177,6 +256,7 @@ def stats(_=Depends(jwt_user)):
 # ---------------------------------------------------------------------------
 # Scan management (admin-only write; user read)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/scan")
 def trigger_scan(_=Depends(jwt_admin)):
@@ -201,19 +281,19 @@ def cancel_scan_endpoint(_=Depends(jwt_admin)):
 def _progress_dict():
     p = get_progress()
     return {
-        "running":        p.running,
-        "started_at":     p.started_at,
-        "finished_at":    p.finished_at,
-        "folders_total":  p.folders_total,
-        "folders_done":   p.folders_done,
-        "files_seen":     p.files_seen,
+        "running": p.running,
+        "started_at": p.started_at,
+        "finished_at": p.finished_at,
+        "folders_total": p.folders_total,
+        "folders_done": p.folders_done,
+        "files_seen": p.files_seen,
         "files_to_parse": p.files_to_parse,
-        "files_parsed":   p.files_parsed,
-        "files_added":    p.files_added,
-        "files_updated":  p.files_updated,
-        "files_removed":  p.files_removed,
-        "files_skipped":  p.files_skipped,
-        "errors":         p.errors,
+        "files_parsed": p.files_parsed,
+        "files_added": p.files_added,
+        "files_updated": p.files_updated,
+        "files_removed": p.files_removed,
+        "files_skipped": p.files_skipped,
+        "errors": p.errors,
         "current_folder": p.current_folder,
     }
 
@@ -221,6 +301,7 @@ def _progress_dict():
 # ---------------------------------------------------------------------------
 # Maintenance (admin-only)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/maintenance/gc")
 def maintenance_gc(_=Depends(jwt_admin)):
@@ -245,6 +326,7 @@ def maintenance_vacuum(_=Depends(jwt_admin)):
 
 
 # ---- Artwork recovery (one-shot, in-process background task) ------------
+
 
 @router.post("/maintenance/recover-artwork")
 def maintenance_recover_artwork(_=Depends(jwt_admin)):
@@ -275,24 +357,25 @@ def maintenance_recover_artwork_cancel(_=Depends(jwt_admin)):
 def _recover_progress_dict():
     p = get_recover_progress()
     return {
-        "running":                 p.running,
-        "started_at":              p.started_at,
-        "finished_at":             p.finished_at,
-        "albums_total":            p.albums_total,
-        "albums_done":             p.albums_done,
-        "artwork_recovered":       p.artwork_recovered,
-        "recovered_via_deezer":    p.recovered_via_deezer,
-        "artists_total":           p.artists_total,
-        "artists_done":            p.artists_done,
+        "running": p.running,
+        "started_at": p.started_at,
+        "finished_at": p.finished_at,
+        "albums_total": p.albums_total,
+        "albums_done": p.albums_done,
+        "artwork_recovered": p.artwork_recovered,
+        "recovered_via_deezer": p.recovered_via_deezer,
+        "artists_total": p.artists_total,
+        "artists_done": p.artists_done,
         "artist_images_recovered": p.artist_images_recovered,
-        "errors":                  p.errors,
-        "phase":                   p.phase,
+        "errors": p.errors,
+        "phase": p.phase,
     }
 
 
 # ---------------------------------------------------------------------------
 # Music folder management (admin-only write; user read)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/folders")
 def folders_list(_=Depends(jwt_user)):
@@ -324,7 +407,9 @@ def folders_add(body: FolderAddRequest, _=Depends(jwt_admin)):
             ),
         )
     if not _os.access(resolved, _os.R_OK):
-        raise HTTPException(status_code=400, detail=f"{resolved} is not readable by the server process")
+        raise HTTPException(
+            status_code=400, detail=f"{resolved} is not readable by the server process"
+        )
 
     name = body.name.strip() or _os.path.basename(resolved.rstrip("/")) or resolved
 
@@ -351,7 +436,9 @@ def folders_delete(folder_id: int, _=Depends(jwt_admin)):
         )
     folder = queries.get_music_folder(folder_id)
     if folder is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such folder")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such folder"
+        )
 
     with transaction():
         deleted = queries.delete_music_folder(folder_id)
@@ -369,6 +456,7 @@ def folders_delete(folder_id: int, _=Depends(jwt_admin)):
 # ---------------------------------------------------------------------------
 # User management (admin-only)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/users")
 def users_list(_=Depends(jwt_admin)):
@@ -390,7 +478,9 @@ def users_create(body: UserCreateRequest, _=Depends(jwt_admin)):
                 auth_core.hash_password(body.password),
                 is_admin=body.is_admin,
             )
-            queries.update_encrypted_password(new_id, auth_core.encrypt_password(body.password))
+            queries.update_encrypted_password(
+                new_id, auth_core.encrypt_password(body.password)
+            )
     except IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -404,7 +494,9 @@ def users_get(user_id: int, _=Depends(jwt_admin)):
     """Get a specific user by id. Admin only."""
     user = queries.get_user_by_id(user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
+        )
     return user
 
 
@@ -417,7 +509,9 @@ def users_patch(user_id: int, body: UserPatchRequest, admin: dict = Depends(jwt_
     """
     user = queries.get_user_by_id(user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
+        )
 
     # Validate before opening the transaction — we don't want to leave a
     # dangling open transaction on this thread when raising.
@@ -440,8 +534,12 @@ def users_patch(user_id: int, body: UserPatchRequest, admin: dict = Depends(jwt_
         if body.disabled is not None:
             queries.set_user_disabled(user_id, body.disabled)
         if body.password is not None:
-            queries.update_user_password(user_id, auth_core.hash_password(body.password))
-            queries.update_encrypted_password(user_id, auth_core.encrypt_password(body.password))
+            queries.update_user_password(
+                user_id, auth_core.hash_password(body.password)
+            )
+            queries.update_encrypted_password(
+                user_id, auth_core.encrypt_password(body.password)
+            )
 
     return queries.get_user_by_id(user_id)
 
@@ -456,7 +554,9 @@ def users_delete(user_id: int, admin: dict = Depends(jwt_admin)):
         )
     user = queries.get_user_by_id(user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
+        )
     with transaction():
         queries.delete_user(user_id)
     return {"deleted": True, "user": user}
@@ -466,16 +566,18 @@ def users_delete(user_id: int, admin: dict = Depends(jwt_admin)):
 # Transcoding policy (any user)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/transcoding/policy")
 def transcoding_policy(_=Depends(jwt_user)):
     from backend.config import get_settings
+
     s = get_settings()
     return {
-        "transcoding_enabled":   s.transcoding_enabled,
-        "default_format":        s.default_transcode_format,
-        "default_bitrate":       s.default_transcode_bitrate,
+        "transcoding_enabled": s.transcoding_enabled,
+        "default_format": s.default_transcode_format,
+        "default_bitrate": s.default_transcode_bitrate,
         "max_streaming_bitrate": s.max_streaming_bitrate,
-        "presets":               transcode_presets.list_presets(),
+        "presets": transcode_presets.list_presets(),
     }
 
 
@@ -484,14 +586,14 @@ def transcoding_policy(_=Depends(jwt_user)):
 # ---------------------------------------------------------------------------
 
 _RELEASE_TYPE_GROUPS = {
-    "album":        "albums",
-    "":             "albums",
-    None:           "albums",
-    "ep":           "eps",
-    "single":       "singles",
-    "compilation":  "compilations",
-    "soundtrack":   "compilations",
-    "anthology":    "compilations",
+    "album": "albums",
+    "": "albums",
+    None: "albums",
+    "ep": "eps",
+    "single": "singles",
+    "compilation": "compilations",
+    "soundtrack": "compilations",
+    "anthology": "compilations",
 }
 
 
@@ -515,22 +617,26 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
     albums = queries.list_artist_albums(internal_id)
 
     grouped: dict[str, list] = {
-        "albums": [], "eps": [], "singles": [], "compilations": [], "other": [],
+        "albums": [],
+        "eps": [],
+        "singles": [],
+        "compilations": [],
+        "other": [],
     }
     for a in albums:
         rt = (a.get("release_type") or "").strip().lower() or None
         bucket = _RELEASE_TYPE_GROUPS.get(rt, "other")
         entry = {
-            "id":           library_core.make_album_id(a["id"]),
-            "name":         a["name"],
-            "artist":       artist["name"],
-            "artistId":     library_core.make_artist_id(internal_id),
-            "year":         a.get("year"),
-            "genre":        a.get("genre"),
+            "id": library_core.make_album_id(a["id"]),
+            "name": a["name"],
+            "artist": artist["name"],
+            "artistId": library_core.make_artist_id(internal_id),
+            "year": a.get("year"),
+            "genre": a.get("genre"),
             "release_type": rt,
-            "track_count":  a.get("track_count"),
-            "duration":     a.get("duration"),
-            "coverArt":     a.get("cover_art_id"),
+            "track_count": a.get("track_count"),
+            "duration": a.get("duration"),
+            "coverArt": a.get("cover_art_id"),
         }
         if a.get("musicbrainz_id"):
             entry["musicBrainzId"] = a["musicbrainz_id"]
@@ -577,18 +683,18 @@ def artist_detail(artist_id_str: str, _=Depends(jwt_user)):
         image_url = bio.image_url
 
     return {
-        "id":             library_core.make_artist_id(internal_id),
-        "name":           artist["name"],
-        "album_count":    artist.get("album_count"),
-        "musicBrainzId":  artist.get("musicbrainz_id"),
+        "id": library_core.make_artist_id(internal_id),
+        "name": artist["name"],
+        "album_count": artist.get("album_count"),
+        "musicBrainzId": artist.get("musicbrainz_id"),
         "albums_grouped": grouped,
-        "appearances":    appearances,
-        "bio":            bio.as_dict() if bio else None,
+        "appearances": appearances,
+        "bio": bio.as_dict() if bio else None,
         # When set, this is the cached server-side URL (hits getCoverArt
         # and is immutably-cacheable). When the recovery sweep hasn't run
         # yet it's a direct Deezer CDN URL — works, but bypasses the
         # local cache and shouldn't be relied on long-term.
-        "image_url":      image_url,
+        "image_url": image_url,
         # Server-cached cover id, useful if the client wants to build its
         # own getCoverArt URL with auth params (which our frontend does).
         "image_cover_art_id": artist.get("image_id"),
