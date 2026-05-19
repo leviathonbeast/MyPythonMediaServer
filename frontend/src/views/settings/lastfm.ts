@@ -28,6 +28,13 @@ import { escapeHtml } from "../_util";
 // collide with anything else the SPA might add later.
 const PENDING_TOKEN_KEY = "muse.lastfm.pending-token";
 
+// Module-level guard: if two refresh() calls race (e.g. a router quirk
+// mounts the section twice), only the first one will see this as null
+// and proceed; the second will find the same promise and await it
+// instead of firing a duplicate /complete call. Last.fm's tokens are
+// single-use, so a duplicate POST is a guaranteed 400.
+let _inFlightComplete: Promise<unknown> | null = null;
+
 export interface LastfmSection {
   refresh: () => Promise<void>;
   cleanup: () => void;
@@ -50,11 +57,21 @@ export async function renderLastfmSection(host: HTMLElement): Promise<LastfmSect
     // If we just returned from last.fm approval, finish the exchange
     // before we ask the server for the current status — otherwise
     // we'd render "Not connected" and then immediately re-render.
+    //
+    // Concurrency: if a second refresh() races with the first, it
+    // sees the same in-flight promise and awaits it instead of
+    // firing a duplicate POST. Single-use Last.fm tokens would
+    // otherwise produce 400 on the loser of the race.
     const pending = sessionStorage.getItem(PENDING_TOKEN_KEY);
-    if (pending) {
-      sessionStorage.removeItem(PENDING_TOKEN_KEY);
+    if (pending || _inFlightComplete) {
+      if (pending && !_inFlightComplete) {
+        sessionStorage.removeItem(PENDING_TOKEN_KEY);
+        _inFlightComplete = lastfmComplete(pending).finally(() => {
+          _inFlightComplete = null;
+        });
+      }
       try {
-        await lastfmComplete(pending);
+        await _inFlightComplete;
       } catch (e) {
         panel.classList.remove("loading");
         panel.innerHTML =

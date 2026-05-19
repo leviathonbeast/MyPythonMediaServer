@@ -180,11 +180,19 @@ async function navigate(): Promise<void> {
 // to `…/web/?token=…` at the root. If a pending Last.fm token is in
 // sessionStorage when the SPA boots, force the user to the settings
 // page — the lastfm section's refresh() then completes the exchange.
-// Without this, the SPA would land on the default route and the
-// pending token would sit unused until the user manually navigated.
+//
+// `history.replaceState` rather than `location.hash =` on purpose:
+// assigning to location.hash fires a hashchange event, which would
+// race against the DOMContentLoaded listener attached below — two
+// parallel navigate() calls both mount the settings page, and the
+// resulting parallel refresh() calls both read the pending token
+// from sessionStorage before either removes it. They each POST to
+// /api/me/lastfm/complete with the same token, the second one finds
+// the Last.fm token already consumed, and returns 400. replaceState
+// changes the URL silently so navigate() only runs once.
 if (sessionStorage.getItem("muse.lastfm.pending-token") &&
     !location.hash.startsWith("#/settings")) {
-  location.hash = "#/settings";
+  history.replaceState(null, "", "#/settings");
 }
 
 window.addEventListener("hashchange", () => { void navigate(); });
