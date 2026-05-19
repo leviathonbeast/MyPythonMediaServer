@@ -828,6 +828,40 @@ export async function deleteFolder(id: number): Promise<{ deleted: boolean; fold
   return res.json();
 }
 
+/* ---------- Last.fm per-user linking ---------- */
+//
+// Three-step OAuth-like flow:
+//   1. lastfmConnect()  → returns { auth_url, token }
+//   2. User approves on last.fm; last.fm redirects back to our cb URL
+//   3. lastfmComplete(token) exchanges the (now-approved) token for a
+//      permanent session key, which the server persists per user.
+//
+// The token survives the cross-origin round-trip via sessionStorage,
+// not via URL params — see views/settings/lastfm.ts.
+
+export interface LastfmStatus {
+  linked: boolean;
+  username?: string;
+}
+
+export async function getLastfmStatus(): Promise<LastfmStatus> {
+  return apiGet<LastfmStatus>("/api/me/lastfm");
+}
+
+export async function lastfmConnect(): Promise<{ auth_url: string; token: string }> {
+  // Backend doesn't require a body; we send {} to satisfy apiPost's signature.
+  return apiPost<{ auth_url: string; token: string }>("/api/me/lastfm/connect", {});
+}
+
+export async function lastfmComplete(token: string): Promise<LastfmStatus> {
+  return apiPost<LastfmStatus>("/api/me/lastfm/complete", { token });
+}
+
+export async function lastfmDisconnect(): Promise<void> {
+  await apiDelete<unknown>("/api/me/lastfm");
+}
+
+
 /* ---------- User management ---------- */
 
 export interface MeInfo {
