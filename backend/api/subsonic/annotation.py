@@ -9,6 +9,10 @@ from backend.db.connection import transaction
 from backend.core import library
 from datetime import datetime, timezone
 
+from fastapi import BackgroundTasks
+import time as _time
+from backend.core import lastfm
+
 from .helpers import (
     _double_register,
     router,
@@ -111,8 +115,9 @@ def _build_starred(user_id: int) -> dict:
 @_double_register("scrobble")
 def scrobble(
     id: list[str] = Query(...),
-    time: Optional[list[int]] = Query(default=None),  # noqa: ARG001 — accepted, unused
+    time: Optional[list[int]] = Query(default=None),
     submission: bool = Query(default=True),
+    background_tasks: BackgroundTasks = None,
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """
@@ -146,6 +151,36 @@ def scrobble(
         with transaction():
             for rid in resolved:
                 queries.play_count(ctx.user_id, rid)
+
+    acct = queries.get_external_account(ctx.user_id, queries.SERVICE_LASTFM)
+    if acct is not None and background_tasks is not None:
+        session_key = acct["auth_token"]
+    if submission:
+        for i, rid in enumerate(resolved):
+            track = queries.get_track(rid)
+            if track is None:
+                continue
+            ts = (time[i] // 1000) if (time and i < len(time)) else int(_time.time())
+            background_tasks.add_task(
+                lastfm.scrobble_track,
+                session_key,
+                artist=track.get("artist_name") or "",
+                title=track["title"],
+                album=track.get("album_name"),
+                mbid=track.get("musicbrainz_id"),
+                timestamp=ts,
+            )
+    elif resolved:
+        track = queries.get_track(resolved[0])
+        if track is not None:
+            background_tasks.add_task(
+                lastfm.update_now_playing,
+                session_key,
+                artist=track.get("artist_name") or "",
+                title=track["title"],
+                album=track.get("album_name"),
+                mbid=track.get("musicbrainz_id"),
+            )
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 
@@ -164,7 +199,9 @@ def get_starred(
 # calls _build_starred at the top of this document
 @_double_register("getStarred2")
 def get_starred2(
-    musicFolderId: Optional[int] = Query(default=None),  # noqa: ARG001 — accepted, scoping NYI
+    musicFolderId: Optional[int] = Query(
+        default=None
+    ),  # noqa: ARG001 — accepted, scoping NYI
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     return responses.ok(
