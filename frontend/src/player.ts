@@ -20,7 +20,15 @@ import {
   subsonic, coverArtUrl, streamUrl, getTranscodingPolicy, getTranscodingPrefs,
   resolveStreamPlan, type TranscodingPolicy,
   getPlayQueueByIndex, savePlayQueueByIndex,
+  getScrobbleThreshold,
 } from "./api";
+
+// Debounce before firing the now-playing ping. Burning Last.fm's 5/sec
+// budget on rapid skips is wasteful and produces flickery "currently
+// listening to X" updates on the user's profile; 2s is short enough
+// to land before most users care, long enough to absorb a few
+// next-button presses in a row.
+const NOW_PLAYING_DEBOUNCE_MS = 2000;
 
 type Listener = (state: PlayerState) => void;
 
@@ -45,6 +53,10 @@ class Player {
   private suppressSave = false;
   private positionTimer: number | null = null;
   private pendingRestorePosition = 0;
+  // Pending now-playing ping. Cleared when the user changes tracks
+  // before NOW_PLAYING_DEBOUNCE_MS elapses, so quick skips don't
+  // generate stale "currently listening" entries on Last.fm.
+  private nowPlayingTimer: number | null = null;
 
   constructor() {
     // Restore volume from previous session if available.
@@ -64,10 +76,16 @@ class Player {
       fwd();
       const track = this.queue[this.index];
       const knownDuration = track?.duration ?? 0;
+      // Threshold is read every tick rather than cached: it's a cheap
+      // localStorage read, and reading lets the user change the setting
+      // mid-track and have it take effect on the next tick without a
+      // page reload.
+      const threshold = getScrobbleThreshold();
       if (
+        threshold > 0 &&                          // 0 = "never scrobble"
         !this.scrobbled &&
         knownDuration > 0 &&
-        this.audio.currentTime / knownDuration >= 0.5
+        this.audio.currentTime / knownDuration >= threshold
       ) {
         this.scrobbled = true;
         this.triggerScrobble();
@@ -180,6 +198,28 @@ class Player {
     });
     this.emit();
     void this.save();
+    this.scheduleNowPlaying(track.id);
+  }
+
+  /**
+   * Schedule a Last.fm now-playing ping for `trackId`, replacing any
+   * previously-scheduled one. The actual call fires after a short
+   * debounce so a flurry of skip-button presses doesn't produce a
+   * burst of "currently listening" updates on the user's profile.
+   */
+  private scheduleNowPlaying(trackId: string): void {
+    if (this.nowPlayingTimer !== null) {
+      clearTimeout(this.nowPlayingTimer);
+    }
+    this.nowPlayingTimer = window.setTimeout(() => {
+      this.nowPlayingTimer = null;
+      void subsonic("scrobble", { id: trackId, submission: "false" }).catch((err) => {
+        // Best-effort: a missed now-playing ping is cosmetic, never
+        // blocks playback. Log at debug so it doesn't clutter
+        // production consoles.
+        console.debug("nowPlaying failed:", err);
+      });
+    }, NOW_PLAYING_DEBOUNCE_MS);
   }
 
   /* ---------- persistence ---------- */

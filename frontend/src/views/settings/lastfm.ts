@@ -20,6 +20,7 @@
 
 import {
   getLastfmStatus, lastfmConnect, lastfmComplete, lastfmDisconnect,
+  getScrobbleThreshold, setScrobbleThreshold,
   type LastfmStatus,
 } from "../../api";
 import { escapeHtml } from "../_util";
@@ -102,19 +103,38 @@ export async function renderLastfmSection(host: HTMLElement): Promise<LastfmSect
   };
 
   const renderHtml = (s: LastfmStatus): string => {
-    if (s.linked) {
-      return `
-        <div style="margin-bottom:1rem">
-          Linked as <strong>${escapeHtml(s.username ?? "")}</strong>
-        </div>
-        <button class="btn ghost" data-disconnect>Disconnect</button>
-      `;
-    }
+    // Link state block (top half of the panel).
+    const linkBlock = s.linked
+      ? `<div style="margin-bottom:1rem">
+           Linked as <strong>${escapeHtml(s.username ?? "")}</strong>
+         </div>
+         <button class="btn ghost" data-disconnect>Disconnect</button>`
+      : `<div style="margin-bottom:1rem;color:var(--muted)">
+           Not connected. Link your Last.fm account to scrobble plays automatically.
+         </div>
+         <button class="btn primary" data-connect>Connect Last.fm</button>`;
+
+    // Threshold control. Shown unconditionally because the same setting
+    // also gates local play_count increments (server-side scrobble
+    // dispatch is the same call regardless of last.fm linkage).
     return `
-      <div style="margin-bottom:1rem;color:var(--muted)">
-        Not connected. Link your Last.fm account to scrobble plays automatically.
+      ${linkBlock}
+      <hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--rule)" />
+      <label style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;font-family:var(--font-display)">
+        <span>Mark a play after</span>
+        <select data-scrobble-threshold class="btn ghost"
+                style="background:transparent;border:1px solid var(--rule);color:var(--ink);padding:.4rem .6rem">
+          <option value="0.25">25% of the track</option>
+          <option value="0.5">50% of the track</option>
+          <option value="0.75">75% of the track</option>
+          <option value="0">Never (disable)</option>
+        </select>
+      </label>
+      <div style="font-family:var(--font-mono);font-size:var(--t-micro);color:var(--muted);margin-top:.5rem">
+        Affects local play counts and Last.fm scrobbles. Now-playing pings
+        always fire shortly after a track starts (cosmetic placeholder on
+        Last.fm; not a permanent scrobble).
       </div>
-      <button class="btn primary" data-connect>Connect Last.fm</button>
     `;
   };
 
@@ -147,6 +167,17 @@ export async function renderLastfmSection(host: HTMLElement): Promise<LastfmSect
         }
         await refresh();
       });
+
+    // Scrobble threshold dropdown — pre-populate from localStorage and
+    // persist on change. Takes effect on the next timeupdate tick;
+    // no page reload needed.
+    const thresholdSel = panel.querySelector<HTMLSelectElement>("[data-scrobble-threshold]");
+    if (thresholdSel) {
+      thresholdSel.value = String(getScrobbleThreshold());
+      thresholdSel.addEventListener("change", () => {
+        setScrobbleThreshold(Number(thresholdSel.value));
+      });
+    }
   };
 
   await refresh();

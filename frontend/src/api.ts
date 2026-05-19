@@ -828,6 +828,39 @@ export async function deleteFolder(id: number): Promise<{ deleted: boolean; fold
   return res.json();
 }
 
+/* ---------- Scrobble threshold (per-browser, per-user) ---------- */
+//
+// Fraction of the track that must play before we fire `scrobble?submission=true`.
+// 0 disables permanent scrobbling entirely (now-playing pings still fire).
+// Stored per-user so two accounts on the same browser don't share a knob.
+
+const SCROBBLE_PREFS_KEY_PREFIX = "muse.scrobble.threshold.";
+
+function _scrobbleKey(): string | null {
+  const { username } = authState();
+  if (!username) return null;
+  return SCROBBLE_PREFS_KEY_PREFIX + username;
+}
+
+/** Read the user's scrobble threshold. Default 0.5 (Subsonic/Last.fm convention). */
+export function getScrobbleThreshold(): number {
+  const key = _scrobbleKey();
+  if (!key) return 0.5;
+  const raw = localStorage.getItem(key);
+  if (raw === null) return 0.5;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.5;
+}
+
+/** Persist the user's scrobble threshold. Value clamped to [0, 1]. */
+export function setScrobbleThreshold(value: number): void {
+  const key = _scrobbleKey();
+  if (!key) return;
+  const clamped = Math.max(0, Math.min(1, value));
+  localStorage.setItem(key, String(clamped));
+}
+
+
 /* ---------- Last.fm per-user linking ---------- */
 //
 // Three-step OAuth-like flow:
