@@ -226,6 +226,7 @@ class Settings(BaseSettings):
     # Without it the artist page still works; it just shows no bio.
     # Get a key (free, instant) at https://www.last.fm/api/account/create
     lastfm_api_key: Optional[str] = Field(default=None)
+    lastfm_api_secret: Optional[str] = Field(default=None)
 
     # ---- Misc --------------------------------------------------------------
     # Subsonic API version we claim to implement. Real Subsonic is at 1.16.1
@@ -330,7 +331,7 @@ def ensure_directories(settings: Settings) -> None:
         # sqlite:////absolute both work — slice off the 'sqlite://' and
         # the remaining string is the path (possibly with a leading slash
         # for absolute paths).
-        path = url[len("sqlite://"):]
+        path = url[len("sqlite://") :]
         if path.startswith("/") and not path.startswith("//"):
             # sqlite:///./rel.db → "/./rel.db" → strip leading slash for relative
             path = path[1:]
