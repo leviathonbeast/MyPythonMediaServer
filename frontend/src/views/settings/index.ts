@@ -27,6 +27,7 @@ import { renderStreamingSection }   from "./streaming";
 import { renderFoldersSection }     from "./folders";
 import { renderScanSection }        from "./scan";
 import { renderMaintenanceSection } from "./maintenance";
+import { renderLastfmSection }      from "./lastfm";
 
 // Every section exposes this minimal shape. We accept it as a return type
 // from each section's mount function, then aggregate the cleanup hooks.
@@ -70,6 +71,11 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
   // Streaming preferences are per-browser (localStorage) and shown to all.
   const streaming = await renderStreamingSection(host);
   cleanups.push(streaming.cleanup);
+
+  // Last.fm linking is per-user and shown to all. Sits with streaming
+  // because both are "your playback / your account" preferences.
+  const lastfm = await renderLastfmSection(host);
+  cleanups.push(lastfm.cleanup);
 
   if (isAdmin) {
     // Both scan-finish and GC/vacuum can change stats AND folder track
