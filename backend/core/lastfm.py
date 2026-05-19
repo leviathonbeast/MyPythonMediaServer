@@ -22,6 +22,7 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -179,3 +180,15 @@ def _html_to_text(s: str) -> str:
     s = html.unescape(s)
     s = _WS_RE.sub(" ", s).strip()
     return s
+
+
+# LAST FM SIGNING HELPER
+def _sign(params: dict[str, str], secret: str) -> str:
+    """compute the last.fm api_sig: md5 of (sorted key+value pairs concat, then secret).
+    Per https://www.last.fm/api/authspec - exclude 'format' and 'callback' from the signature, but include every other param exactly as sent.
+    """
+    parts = [
+        f"{k}{v}" for k, v in sorted(params.items()) if k not in ("format", "callback")
+    ]
+
+    return hashlib.md5(("".join(parts) + secret).encode("utf-8")).hexdigest()
