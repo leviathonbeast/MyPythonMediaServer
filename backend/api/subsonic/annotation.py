@@ -277,7 +277,7 @@ def unstar(
 @_double_register("getNowPlaying")
 def get_now_playing(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
     entries = now_playing.list_active(within_seconds=300)  # 5-min TTL
-    now = datetime.now()
+    now = _time.time()
     output = []
     for entry in entries:
         track = queries.get_track(entry.track_id)
