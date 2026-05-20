@@ -6,7 +6,7 @@ from typing import Optional
 
 from backend.db import queries
 from backend.db.connection import transaction
-from backend.core import library
+from backend.core import library, now_playing
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks
@@ -275,7 +275,23 @@ def unstar(
 
 @_double_register("getNowPlaying")
 def get_now_playing(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
-    # TODO: track in-flight stream sessions.
+    entries = now_playing.list_active(within_seconds=300)  # 5-min TTL
+    now = datetime.now()
+    output = []
+    for entry in entries:
+        track = queries.get_track(entry.track_id)
+        if track is None:  # track deleted; skip
+            continue
+        user = queries.get_user_by_id(entry.user_id)
+        if user is None:  # user deleted; skip
+            continue
+    song = library.track_to_subsonic(track)
+    song["username"] = user["username"]
+    song["minutesAgo"] = (now - entry.started_at) // 60
+    song["playerId"] = 0  # we don't track per-device ids
+    song["playerName"] = entry.client
+    output.append(song)
+
     return responses.ok(
-        {"nowPlaying": {"entry": []}}, fmt=ctx.fmt, callback=ctx.callback
+        {"nowPlaying": {"entry": output}}, fmt=ctx.fmt, callback=ctx.callback
     )
