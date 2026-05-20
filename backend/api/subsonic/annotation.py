@@ -173,6 +173,7 @@ def scrobble(
                     timestamp=ts,
                 )
         elif resolved:
+            now_playing.record(ctx.user_id, resolved[0], ctx.client)
             track = queries.get_track(resolved[0])
             if track is not None:
                 background_tasks.add_task(
@@ -285,12 +286,12 @@ def get_now_playing(ctx: SubsonicContext = Depends(subsonic_context)) -> Respons
         user = queries.get_user_by_id(entry.user_id)
         if user is None:  # user deleted; skip
             continue
-    song = library.track_to_subsonic(track)
-    song["username"] = user["username"]
-    song["minutesAgo"] = (now - entry.started_at) // 60
-    song["playerId"] = 0  # we don't track per-device ids
-    song["playerName"] = entry.client
-    output.append(song)
+        song = library.track_to_subsonic(track)
+        song["username"] = user["username"]
+        song["minutesAgo"] = (now - entry.started_at) // 60
+        song["playerId"] = 0  # we don't track per-device ids
+        song["playerName"] = entry.client
+        output.append(song)
 
     return responses.ok(
         {"nowPlaying": {"entry": output}}, fmt=ctx.fmt, callback=ctx.callback
