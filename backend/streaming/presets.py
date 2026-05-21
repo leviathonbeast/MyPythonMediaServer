@@ -65,7 +65,7 @@ def _opus(br: int) -> TranscodePreset:
         bitrate=br,
         content_type="audio/ogg",
         suffix="opus",
-        ffmpeg_args=["-vn", "-c:a", "libopus", "-b:a", f"{br}k", "-f", "ogg"],
+        ffmpeg_args=["-vn", "-c:a", "libopus", "-b:a", f"{br}k", "-f", "opus"],
     )
 
 
