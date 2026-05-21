@@ -26,6 +26,7 @@ import { renderStatsSection }       from "./stats";
 import { renderStreamingSection }   from "./streaming";
 import { renderFoldersSection }     from "./folders";
 import { renderScanSection }        from "./scan";
+import { renderAnalyzeSection }     from "./analyze";
 import { renderMaintenanceSection } from "./maintenance";
 import { renderLastfmSection }      from "./lastfm";
 
@@ -87,6 +88,11 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
 
     const scan = await renderScanSection(host, { onLibraryChanged });
     cleanups.push(scan.cleanup);
+
+    // Sonic analysis sits right after Scan — it's the second-stage, opt-in
+    // pass that fingerprints tracks once they're in the library.
+    const analyze = await renderAnalyzeSection(host);
+    cleanups.push(analyze.cleanup);
 
     const maint = await renderMaintenanceSection(host, { onLibraryChanged });
     cleanups.push(maint.cleanup);

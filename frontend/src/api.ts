@@ -456,6 +456,24 @@ export async function getSong(id: string): Promise<SubsonicSong> {
   return result.song;
 }
 
+/**
+ * Tracks sonically similar to `id` (OpenSubsonic sonicSimilarity extension).
+ * Returns the song objects, most-similar first. Empty when the track has no
+ * feature vector yet — run the analysis pass from Settings to populate them.
+ *
+ * The response is the flat `sonicMatch: [{entry, similarity}]` shape; we unwrap
+ * to just the song entries (the similarity score isn't surfaced in the UI).
+ */
+export async function getSonicSimilarTracks(
+  id: string,
+  count = 12,
+): Promise<SubsonicSong[]> {
+  const env = await subsonic<{
+    sonicMatch?: Array<{ entry: SubsonicSong; similarity: number }>;
+  }>("getSonicSimilarTracks", { id, count });
+  return (env.sonicMatch ?? []).map(m => m.entry);
+}
+
 export async function getStarred2(): Promise<{
   artist: SubsonicArtist[];
   album: SubsonicAlbum[];
@@ -737,6 +755,35 @@ export async function startScan(
 
 export async function cancelScan(): Promise<{ cancelled: boolean; progress: ScanProgress }> {
   return apiPost<{ cancelled: boolean; progress: ScanProgress }>("/api/scan/cancel", {});
+}
+
+/* ---------- Sonic analysis (populates track_features for sonicSimilarity) ---------- */
+
+export interface AnalyzeProgress {
+  running: boolean;
+  started_at?: number;
+  finished_at?: number;
+  total?: number;     // tracks selected for this run
+  analyzed?: number;  // extracted + stored
+  failed?: number;    // undecodable / extraction returned nothing
+  current?: string;   // path being processed
+}
+
+export async function getAnalyzeProgress(): Promise<AnalyzeProgress> {
+  return apiGet<AnalyzeProgress>("/api/analyze");
+}
+
+// `force` re-analyses every track, not just those missing a current feature
+// row — needed after a feature-layout change. Maps to POST /api/analyze?force=true.
+export async function startAnalyze(
+  force = false,
+): Promise<{ started: boolean; progress: AnalyzeProgress }> {
+  const path = force ? "/api/analyze?force=true" : "/api/analyze";
+  return apiPost<{ started: boolean; progress: AnalyzeProgress }>(path, {});
+}
+
+export async function cancelAnalyze(): Promise<{ cancelled: boolean; progress: AnalyzeProgress }> {
+  return apiPost<{ cancelled: boolean; progress: AnalyzeProgress }>("/api/analyze/cancel", {});
 }
 
 /* ---------- Maintenance / GC ---------- */

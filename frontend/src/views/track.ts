@@ -21,6 +21,7 @@
 import {
   getSong,
   getArtistDetail,
+  getSonicSimilarTracks,
   coverArtUrl,
   type SubsonicAlbum,
   type SubsonicSong,
@@ -43,12 +44,16 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
     const song = await getSong(id);
     song.lyrics = "[00:01.00] Hello world\n[00:03.00] This is a test\nNo timestamp here";  // TEMP
 
-    // The artist call can fail (Last.fm down, artist lookup error) without
-    // the page being broken — we just won't have a "More by" row. Catching
-    // here keeps the rest of the render bullet-proof.
-    const artistDetail = song.artistId
-      ? await getArtistDetail(song.artistId).catch(() => null)
-      : null;
+    // The artist "More by" row and the "Sonic similar" row both depend only
+    // on the song we just fetched, so fire them in parallel. Each can fail
+    // (artist lookup error, or no feature vectors yet) without breaking the
+    // page — they just render nothing.
+    const [artistDetail, similar] = await Promise.all([
+      song.artistId
+        ? getArtistDetail(song.artistId).catch(() => null)
+        : Promise.resolve(null),
+      getSonicSimilarTracks(id, 12).catch(() => [] as SubsonicSong[]),
+    ]);
 
     // ---- Render --------------------------------------------------------
     // Sections, top to bottom. Each section is its own helper so the main
@@ -60,8 +65,9 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
         ${heroHtml(song)}
         ${fromAlbumHtml(song)}
         ${lyricsHtml(song)}
+        ${sonicSimilarHtml(similar)}
         ${moreByArtistHtml(song, artistDetail)}
-        
+
       </div>
     `;
 
@@ -79,6 +85,21 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
           // Surface failures only; success is implicit. Switch to a toast
           // component here when one lands.
           if (!r.added && r.message) window.alert(r.message);
+        });
+
+    // ---- Sonic-similar row: play-all + click-a-row-to-play -------------
+    // Clicking a row plays the whole similar set starting at that track, so
+    // the rest queues up as a "more like this" radio.
+    host.querySelector<HTMLButtonElement>("[data-similar-playall]")
+        ?.addEventListener("click", () => player.playQueue(similar, 0));
+    host.querySelector<HTMLTableSectionElement>("[data-similar] tbody")
+        ?.addEventListener("click", (e) => {
+          const target = e.target as HTMLElement;
+          if (target.closest("a")) return;  // let artist/album links navigate
+          const tr = target.closest("tr");
+          if (!tr) return;
+          const idx = Number(tr.dataset.idx);
+          if (Number.isFinite(idx)) player.playQueue(similar, idx);
         });
 
   } catch (e) {
@@ -383,5 +404,62 @@ function moreByArtistHtml(
         })).join("")}
       </div>
     </section>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// "Sonically similar" — tracks near this one in the librosa feature space,
+// from the getSonicSimilarTracks endpoint.
+//
+// Renders nothing when empty. That happens whenever this track (or the
+// library) hasn't been analysed yet — and an empty "no similar tracks"
+// state would read as a bug rather than "feature not populated". The
+// analysis pass is discoverable from Settings, which is the right home for
+// the "make this work" action.
+// ---------------------------------------------------------------------------
+function sonicSimilarHtml(similar: SubsonicSong[]): string {
+  if (similar.length === 0) return "";
+
+  return `
+    <section style="margin-top:var(--gap-12)">
+      <div class="section-head">
+        <h2>Sonically Similar</h2>
+        <span class="rule"></span>
+        <span class="count">${similar.length}</span>
+      </div>
+      <div style="margin-bottom:1rem">
+        <button class="btn ghost" data-similar-playall>▶ Play all</button>
+      </div>
+      <table class="tracklist" data-similar>
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>Title</th>
+            <th>Artist</th>
+            <th>Album</th>
+            <th class="duration">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${similar.map((s, i) => similarRowHtml(s, i)).join("")}
+        </tbody>
+      </table>
+    </section>
+  `;
+}
+
+function similarRowHtml(s: SubsonicSong, idx: number): string {
+  const artistCell = renderArtistLinks(s.artist, s.artistId);
+  const albumCell = s.albumId
+    ? `<a href="#/album/${encodeURIComponent(s.albumId)}">${escapeHtml(s.album ?? "")}</a>`
+    : escapeHtml(s.album ?? "");
+  return `
+    <tr data-idx="${idx}" style="cursor:pointer">
+      <td class="num">${idx + 1}</td>
+      <td class="title">${escapeHtml(s.title)}</td>
+      <td>${artistCell}</td>
+      <td>${albumCell}</td>
+      <td class="duration">${fmtDuration(s.duration)}</td>
+    </tr>
   `;
 }
