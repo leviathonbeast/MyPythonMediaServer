@@ -169,6 +169,9 @@ def get_starred_items(user_id: int) -> List[Dict[str, Any]]:
                t.suffix          AS track_suffix,
                t.content_type    AS track_content_type,
                t.bitrate         AS track_bitrate,
+               t.channels        AS track_channels,
+               t.sample_rate     AS track_sample_rate,
+               t.bit_depth       AS track_bit_depth,
                t.size            AS track_size,
                t.album_id        AS track_album_id,
                t.artist_id       AS track_artist_id,
@@ -899,6 +902,7 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
         .execute(
             """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.channels, t.sample_rate, t.bit_depth,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.musicbrainz_id,
                t.artist_id, ar.name AS artist_name,
@@ -1222,6 +1226,7 @@ def list_random_songs(
         .execute(
             f"""
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.channels, t.sample_rate, t.bit_depth,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
                t.album_id,  al.name AS album_name, al.cover_art_id
@@ -1264,6 +1269,7 @@ def list_song_by_genre(
         .execute(
             f"""
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.channels, t.sample_rate, t.bit_depth,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
                t.album_id,  al.name AS album_name, al.cover_art_id
@@ -1291,22 +1297,28 @@ def upsert_track(track: Dict[str, Any]) -> int:
     Saves one query per track during scans — on a 100k-track library that's
     100k fewer SELECTs.
     """
-    # Ensure musicbrainz_id is always present in the params dict — sqlite3
-    # raises ProgrammingError on a missing named placeholder.
+    # Ensure optional named placeholders are always present in the params
+    # dict — sqlite3 raises ProgrammingError on a missing named placeholder.
+    # Callers predating the stream-property columns (and some tests) omit them.
     track = {**track}
     track.setdefault("musicbrainz_id", None)
+    track.setdefault("channels", None)
+    track.setdefault("sample_rate", None)
+    track.setdefault("bit_depth", None)
     row = (
         get_conn()
         .execute(
             """
         INSERT INTO tracks (
             album_id, artist_id, music_folder_id, path, title,
-            track_number, disc_number, duration, bitrate, size,
+            track_number, disc_number, duration, bitrate,
+            channels, sample_rate, bit_depth, size,
             suffix, content_type, year, genre,
             mtime, content_hash, last_scanned, musicbrainz_id
         ) VALUES (
             :album_id, :artist_id, :music_folder_id, :path, :title,
-            :track_number, :disc_number, :duration, :bitrate, :size,
+            :track_number, :disc_number, :duration, :bitrate,
+            :channels, :sample_rate, :bit_depth, :size,
             :suffix, :content_type, :year, :genre,
             :mtime, :content_hash, :last_scanned, :musicbrainz_id
         )
@@ -1318,6 +1330,9 @@ def upsert_track(track: Dict[str, Any]) -> int:
             disc_number  = excluded.disc_number,
             duration     = excluded.duration,
             bitrate      = excluded.bitrate,
+            channels     = excluded.channels,
+            sample_rate  = excluded.sample_rate,
+            bit_depth    = excluded.bit_depth,
             size         = excluded.size,
             suffix       = excluded.suffix,
             content_type = excluded.content_type,
@@ -1371,6 +1386,7 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
         .execute(
             """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.channels, t.sample_rate, t.bit_depth,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
                t.album_id,  al.name AS album_name, al.cover_art_id
@@ -1510,6 +1526,7 @@ def search3(
         songs = conn.execute(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                   t.channels, t.sample_rate, t.bit_depth,
                    t.track_number, t.year, t.genre, t.path,
                    t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
@@ -1530,6 +1547,7 @@ def search3(
         songs = conn.execute(
             """
             SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                   t.channels, t.sample_rate, t.bit_depth,
                    t.track_number, t.year, t.genre, t.path,
                    t.musicbrainz_id,
                    t.artist_id, ar.name AS artist_name,
@@ -1555,6 +1573,7 @@ def search3(
             songs = conn.execute(
                 """
                 SELECT t.id, t.title, t.duration, t.bitrate, t.size, t.suffix, t.content_type,
+                       t.channels, t.sample_rate, t.bit_depth,
                        t.track_number, t.year, t.genre, t.path,
                        t.musicbrainz_id,
                        t.artist_id, ar.name AS artist_name,

@@ -256,6 +256,75 @@ class TestListArtistsIndexed:
 
 
 # ===========================================================================
+# Extended track stream properties (channels / sample_rate / bit_depth)
+# ===========================================================================
+
+
+class TestTrackStreamProps:
+    def test_upsert_and_get_roundtrip(self, client):
+        with transaction():
+            folder = queries.add_music_folder(name="sp", path="/sp-folder")
+            artist = queries.upsert_artist("SP Artist")
+            album = queries.upsert_album(artist_id=artist, name="SP Album", year=2024)
+            row = _track_row(
+                path="/sp/song.flac", artist_id=artist, album_id=album,
+                music_folder_id=folder,
+            )
+            row.update({
+                "channels": 2, "sample_rate": 96000, "bit_depth": 24,
+                "suffix": "flac", "content_type": "audio/flac",
+            })
+            tid = queries.upsert_track(row)
+        t = queries.get_track(tid)
+        assert t["channels"] == 2
+        assert t["sample_rate"] == 96000
+        assert t["bit_depth"] == 24
+
+    def test_upsert_without_stream_props_defaults_null(self, client):
+        # Legacy callers (and tests) omit the keys entirely; upsert must not
+        # raise on the missing named placeholders and must store NULL.
+        with transaction():
+            folder = queries.add_music_folder(name="sp2", path="/sp2-folder")
+            artist = queries.upsert_artist("SP2 Artist")
+            album = queries.upsert_album(artist_id=artist, name="SP2 Album", year=2024)
+            tid = queries.upsert_track(_track_row(
+                path="/sp2/song.mp3", artist_id=artist, album_id=album,
+                music_folder_id=folder,
+            ))
+        t = queries.get_track(tid)
+        assert t["channels"] is None
+        assert t["sample_rate"] is None
+        assert t["bit_depth"] is None
+
+
+class TestTrackToSubsonicStreamProps:
+    def test_emits_when_present(self):
+        from backend.core.library import track_to_subsonic
+        out = track_to_subsonic(
+            {"id": 1, "title": "x", "channels": 2, "sample_rate": 48000, "bit_depth": 16}
+        )
+        assert out["channelCount"] == 2
+        assert out["samplingRate"] == 48000
+        assert out["bitDepth"] == 16
+
+    def test_omits_when_absent(self):
+        from backend.core.library import track_to_subsonic
+        out = track_to_subsonic({"id": 1, "title": "x"})
+        assert "channelCount" not in out
+        assert "samplingRate" not in out
+        assert "bitDepth" not in out
+
+    def test_omits_zero_bitdepth_for_lossy(self):
+        # bit_depth 0/None (lossy formats) must be omitted, not sent as 0.
+        from backend.core.library import track_to_subsonic
+        out = track_to_subsonic(
+            {"id": 1, "title": "x", "channels": 2, "sample_rate": 44100, "bit_depth": 0}
+        )
+        assert out["channelCount"] == 2
+        assert "bitDepth" not in out
+
+
+# ===========================================================================
 # get_artist_cover_art_id (getCoverArt ar-N resolution)
 # ===========================================================================
 

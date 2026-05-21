@@ -43,6 +43,17 @@ class TrackMetadata:
     genre: Optional[str] = None
     duration: Optional[int] = None     # seconds
     bitrate: Optional[int] = None       # kbps
+    # Extended stream properties, read from mutagen/ffprobe streaminfo.
+    # All Optional because not every format/source exposes them:
+    #   channels    — 1 (mono), 2 (stereo), 6 (5.1), …
+    #   sample_rate — Hz, e.g. 44100, 48000, 96000
+    #   bit_depth   — bits per sample. ONLY meaningful for lossless formats
+    #                 (FLAC/WAV/ALAC). Lossy codecs (mp3/aac/opus) have no
+    #                 fixed sample depth, so this stays None for them — that
+    #                 is correct, not missing data.
+    channels: Optional[int] = None
+    sample_rate: Optional[int] = None   # Hz
+    bit_depth: Optional[int] = None     # bits/sample (lossless only)
     # Picard / MusicBrainz primary release type — "album", "ep", "single",
     # "compilation", "live", "remix", "soundtrack", etc. We normalise to
     # lowercase and don't validate further; the artist page maps known
@@ -181,6 +192,16 @@ def _try_mutagen(path: str, meta: TrackMetadata, extract_art: bool = False) -> N
             meta.duration = int(info.length)
         if hasattr(info, "bitrate") and info.bitrate:
             meta.bitrate = int(info.bitrate / 1000)
+        # Extended stream properties. mutagen exposes these on most formats:
+        #   .channels / .sample_rate are near-universal (mp3, flac, mp4, ogg…)
+        #   .bits_per_sample exists only on lossless info objects (FLAC,
+        #     WAVE, AIFF, WavPack) — absent on lossy, where it's meaningless.
+        if getattr(info, "channels", None):
+            meta.channels = int(info.channels)
+        if getattr(info, "sample_rate", None):
+            meta.sample_rate = int(info.sample_rate)
+        if getattr(info, "bits_per_sample", None):
+            meta.bit_depth = int(info.bits_per_sample)
 
     # Embedded art and the ID3-TXXX / MP4-`----` release-type fallback
     # both need raw (non-easy) tags. Only re-open when the caller asked
@@ -334,6 +355,38 @@ def _try_ffprobe(path: str, meta: TrackMetadata) -> None:
             meta.bitrate = int(int(fmt.get("bit_rate") or 0) / 1000) or None
         except (TypeError, ValueError):
             pass
+
+    # Extended stream properties from the first audio stream. Only fill what
+    # mutagen left blank, so a partial mutagen read isn't clobbered.
+    #   channels / sample_rate are reported on essentially every audio stream.
+    #   bit depth: ffprobe gives `bits_per_raw_sample` (the true source depth
+    #     for lossless) or `bits_per_sample` (often 0 for lossy/compressed) —
+    #     prefer the former, accept either when > 0, else leave None.
+    audio_stream = next(
+        (s for s in (data.get("streams") or []) if s.get("codec_type") == "audio"),
+        None,
+    )
+    if audio_stream is not None:
+        if meta.channels is None:
+            try:
+                meta.channels = int(audio_stream.get("channels") or 0) or None
+            except (TypeError, ValueError):
+                pass
+        if meta.sample_rate is None:
+            try:
+                meta.sample_rate = int(audio_stream.get("sample_rate") or 0) or None
+            except (TypeError, ValueError):
+                pass
+        if meta.bit_depth is None:
+            try:
+                depth = int(
+                    audio_stream.get("bits_per_raw_sample")
+                    or audio_stream.get("bits_per_sample")
+                    or 0
+                )
+                meta.bit_depth = depth or None
+            except (TypeError, ValueError):
+                pass
 
 
 # ---------------------------------------------------------------------------

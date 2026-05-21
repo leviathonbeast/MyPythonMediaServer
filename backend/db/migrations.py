@@ -128,10 +128,27 @@ def _migration_004_add_current_pos_to_play_queues(conn: sqlite3.Connection) -> N
 def _migration_user_external_accounts(conn: sqlite3.Connection) -> None:
     """LAST FM scrobble"""
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_external_accounts(user_id INTEGER NOT NULL, service TEXT NOT NULL, 
+        CREATE TABLE IF NOT EXISTS user_external_accounts(user_id INTEGER NOT NULL, service TEXT NOT NULL,
         auth_token TEXT NOT NULL, username TEXT, linked_at INTEGER NOT NULL, PRIMARY KEY (user_id, service), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
 
         """)
+
+
+def _migration_006_add_track_stream_props(conn: sqlite3.Connection) -> None:
+    """Add channels / sample_rate / bit_depth to tracks.
+
+    These back the OpenSubsonic song fields channelCount/samplingRate/bitDepth
+    and the getTranscodeDecision source-stream analysis. All nullable: existing
+    rows stay NULL until a rescan repopulates them, and bit_depth is always
+    NULL for lossy formats (it's meaningless there).
+
+    One ALTER per column — SQLite only adds a single column per statement, and
+    splitting keeps it portable to Postgres too. ADD COLUMN with no default is
+    instant on both engines (no table rewrite).
+    """
+    conn.execute("ALTER TABLE tracks ADD COLUMN channels INTEGER")
+    conn.execute("ALTER TABLE tracks ADD COLUMN sample_rate INTEGER")
+    conn.execute("ALTER TABLE tracks ADD COLUMN bit_depth INTEGER")
 
 
 # Order matters. Append new migrations; never reorder existing ones.
@@ -142,6 +159,7 @@ MIGRATIONS: List[Migration] = [
     (3, _migration_003_seed_music_folders),
     (4, _migration_004_add_current_pos_to_play_queues),
     (5, _migration_user_external_accounts),
+    (6, _migration_006_add_track_stream_props),
 ]
 
 

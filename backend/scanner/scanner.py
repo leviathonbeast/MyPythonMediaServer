@@ -368,41 +368,49 @@ def cancel_scan() -> bool:
     return True
 
 
-def start_scan_async() -> bool:
+def start_scan_async(force: bool = False) -> bool:
     """
     Kick off a scan in a background thread. Returns False if one is already running.
 
     Used by the API endpoint that triggers a manual rescan.
+
+    `force=True` re-parses every file even when its (mtime, size) is
+    unchanged — the only way to backfill columns added after the library was
+    first scanned (e.g. the channels/sample_rate/bit_depth stream props),
+    since the normal fast path skips untouched files.
     """
     if not _lock.acquire(blocking=False):
         return False
     _cancel_event.clear()
-    t = threading.Thread(target=_run_scan, name="muse-scanner", daemon=True)
+    t = threading.Thread(
+        target=_run_scan, args=(force,), name="muse-scanner", daemon=True
+    )
     t.start()
     return True
 
 
-def scan_all_blocking() -> ScanProgress:
-    """Synchronous version (used by --scan CLI flag and tests)."""
+def scan_all_blocking(force: bool = False) -> ScanProgress:
+    """Synchronous version (used by the CLI and tests). See start_scan_async
+    for what `force` does."""
     with _lock:
-        _run_scan_inner()
+        _run_scan_inner(force=force)
     return _progress
 
 
-def _run_scan() -> None:
+def _run_scan(force: bool = False) -> None:
     """Internal: drive the scan and release the lock when done."""
     # Give this thread a larger SQLite page cache before any DB access.
     # API threads share the smaller default; the scanner gets more because
     # it reads every path, artist, and album row in the library.
     init_thread_connection(_SCANNER_CACHE_PAGES)
     try:
-        _run_scan_inner()
+        _run_scan_inner(force=force)
     finally:
         _cancel_event.clear()
         _lock.release()
 
 
-def _run_scan_inner() -> None:
+def _run_scan_inner(force: bool = False) -> None:
     """The actual scan. Called with _lock held."""
     settings = get_settings()
     global _progress
@@ -419,7 +427,7 @@ def _run_scan_inner() -> None:
             break
         _progress.current_folder = folder["path"]
         try:
-            _scan_folder(folder, extensions)
+            _scan_folder(folder, extensions, force=force)
         except Exception as e:
             log.exception("scan failed for folder %s", folder["path"])
             _progress.errors += 1
@@ -565,8 +573,8 @@ def _run_local_artwork_phase() -> int:
     return recovered
 
 
-def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
-    """Scan a single music folder."""
+def _scan_folder(folder: Dict[str, Any], extensions: set, force: bool = False) -> None:
+    """Scan a single music folder. `force` re-parses unchanged files (backfill)."""
     settings = get_settings()
     folder_id = folder["id"]
     root = folder["path"]
@@ -603,11 +611,15 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
         prior = existing.pop(path, None)
         if prior is not None:
             _, prior_mtime, prior_size, prior_album_id = prior
-            if int(st.st_mtime) == prior_mtime and st.st_size == prior_size:
+            # Fast path: skip files whose (mtime, size) is unchanged. `force`
+            # bypasses this so a backfill re-parses everything — required to
+            # populate columns added after the original scan, which untouched
+            # files would otherwise never receive.
+            if (not force) and int(st.st_mtime) == prior_mtime and st.st_size == prior_size:
                 _progress.files_skipped += 1
                 touched_albums.add(prior_album_id) # even skipped files contribute to album aggregates
                 continue
-            # Changed — re-parse.
+            # Changed (or forced) — re-parse.
             to_parse.append((path, st, "update"))
         else:
             to_parse.append((path, st, "new"))
@@ -699,6 +711,9 @@ def _scan_folder(folder: Dict[str, Any], extensions: set) -> None:
                     "disc_number":     rec.get("disc_number"),
                     "duration":        rec.get("duration"),
                     "bitrate":         rec.get("bitrate"),
+                    "channels":        rec.get("channels"),
+                    "sample_rate":     rec.get("sample_rate"),
+                    "bit_depth":       rec.get("bit_depth"),
                     "size":            rec["size"],
                     "suffix":          rec["suffix"],
                     "content_type":    rec["content_type"],
@@ -842,6 +857,9 @@ def _parse_one(path: str, st, folder_id: int) -> Dict[str, Any]:
         "disc_number":  meta.disc_number,
         "duration":     meta.duration,
         "bitrate":      meta.bitrate,
+        "channels":     meta.channels,
+        "sample_rate":  meta.sample_rate,
+        "bit_depth":    meta.bit_depth,
         "size":         st.st_size,
         "mtime":        int(st.st_mtime),
         "year":         meta.year,

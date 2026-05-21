@@ -309,6 +309,21 @@ def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
         out["albumArtists"] = [{"id": artist_id_str, "name": album_artist_name}]
         out["displayAlbumArtist"] = album_artist_name
 
+    # Extended stream properties (OpenSubsonic). Only emitted when the scanner
+    # actually captured them: lossy formats never carry a bit depth, libraries
+    # scanned before this feature have NULLs until a rescan, and not every
+    # query selects these columns. Omit-when-absent keeps payloads honest
+    # rather than sending nulls/zeros clients would misrender.
+    channels = t.get("channels")
+    sample_rate = t.get("sample_rate")
+    bit_depth = t.get("bit_depth")
+    if channels:
+        out["channelCount"] = channels
+    if sample_rate:
+        out["samplingRate"] = sample_rate
+    if bit_depth:
+        out["bitDepth"] = bit_depth
+
     return out
 
 

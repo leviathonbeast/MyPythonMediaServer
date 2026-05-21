@@ -396,6 +396,39 @@ class TestGetTranscodeDecision:
         assert td["transcodeStream"]["codec"] == "mp3"
         assert td["transcodeParams"]  # non-empty opaque token
 
+    def test_source_stream_includes_scanned_props(self, client):
+        # A track with scanned channels/sample_rate/bit_depth must surface
+        # them in sourceStream (proves the columns flow end-to-end into the
+        # decision, not just into get_track).
+        import time as _t
+        with transaction():
+            folder = queries.add_music_folder(name="hd", path="/hd-folder")
+            artist = queries.upsert_artist("HD Artist")
+            album = queries.upsert_album(artist_id=artist, name="HD Album", year=2024)
+            now = int(_t.time())
+            tid = queries.upsert_track({
+                "album_id": album, "artist_id": artist, "music_folder_id": folder,
+                "path": "/hd-folder/hi.flac", "title": "HiRes",
+                "track_number": 1, "disc_number": 1, "duration": 200,
+                "bitrate": 3000, "channels": 2, "sample_rate": 96000,
+                "bit_depth": 24, "size": 75_000_000, "suffix": "flac",
+                "content_type": "audio/flac", "year": 2024, "genre": "Jazz",
+                "mtime": now, "content_hash": None, "last_scanned": now,
+            })
+        body = {
+            "directPlayProfiles": [
+                {"containers": ["flac"], "audioCodecs": ["flac"], "protocols": []}
+            ]
+        }
+        r = _transcode_post(client, body, mediaId=f"tr-{tid}", mediaType="song")
+        td = _ok(r)["transcodeDecision"]
+        assert td["canDirectPlay"] is True
+        src = td["sourceStream"]
+        assert src["audioChannels"] == 2
+        assert src["audioSamplerate"] == 96000
+        assert src["audioBitdepth"] == 24
+        assert src["audioBitrate"] == 3_000_000  # 3000 kbps → bps
+
 
 # ===========================================================================
 # 8. Playlists

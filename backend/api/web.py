@@ -259,9 +259,15 @@ def stats(_=Depends(jwt_user)):
 
 
 @router.post("/scan")
-def trigger_scan(_=Depends(jwt_admin)):
-    """Start a library scan. Admin only."""
-    started = start_scan_async()
+def trigger_scan(force: bool = False, _=Depends(jwt_admin)):
+    """Start a library scan. Admin only.
+
+    `?force=true` re-parses every file even if unchanged — use it to backfill
+    metadata columns added since the last full scan (e.g. the channels /
+    sample_rate / bit_depth stream props). Slower: it re-reads tags for the
+    whole library instead of skipping untouched files.
+    """
+    started = start_scan_async(force=force)
     return {"started": started, "progress": _progress_dict()}
 
 

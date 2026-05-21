@@ -177,8 +177,12 @@ async def get_transcode_decision(
         source_container=suffix,
         source_codec=transcode_decision.codec_for_suffix(suffix),
         source_bitrate_bps=src_bitrate_bps,
-        # channels / samplerate / bitdepth aren't scanned yet → left None,
-        # which decide() treats as "can't evaluate" rather than guessing.
+        # Extended stream props (populated by the scanner; NULL on tracks not
+        # yet rescanned, and bit depth is always NULL for lossy). decide()
+        # treats any None as "can't evaluate" rather than guessing.
+        source_channels=track.get("channels"),
+        source_samplerate=track.get("sample_rate"),
+        source_bitdepth=track.get("bit_depth"),
         client=client_info,
         transcoding_enabled=settings.transcoding_enabled,
         default_transcode_format=settings.default_transcode_format,
