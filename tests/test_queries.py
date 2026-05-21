@@ -325,6 +325,78 @@ class TestTrackToSubsonicStreamProps:
 
 
 # ===========================================================================
+# track_features storage (sonicSimilarity backing)
+# ===========================================================================
+
+
+def _seed_track(path: str) -> int:
+    with transaction():
+        folder = queries.add_music_folder(name=path, path=f"/{path}-dir")
+        artist = queries.upsert_artist(f"A {path}")
+        album = queries.upsert_album(artist_id=artist, name=f"Al {path}", year=2024)
+        now = int(time.time())
+        return queries.upsert_track({
+            "album_id": album, "artist_id": artist, "music_folder_id": folder,
+            "path": f"/{path}-dir/song.mp3", "title": path, "track_number": 1,
+            "disc_number": 1, "duration": 180, "bitrate": 320, "size": 1,
+            "suffix": "mp3", "content_type": "audio/mpeg", "year": 2024,
+            "genre": "x", "mtime": now, "content_hash": None, "last_scanned": now,
+        })
+
+
+class TestTrackFeaturesStorage:
+    def test_upsert_get_roundtrip(self, client):
+        tid = _seed_track("rt")
+        vec = [0.5] * 44
+        with transaction():
+            queries.upsert_track_features(tid, vec, 1)
+        assert queries.get_track_features(tid) == vec
+
+    def test_get_missing_returns_none(self, client):
+        tid = _seed_track("miss")
+        assert queries.get_track_features(tid) is None
+
+    def test_upsert_replaces_on_conflict(self, client):
+        tid = _seed_track("conf")
+        with transaction():
+            queries.upsert_track_features(tid, [1.0], 1)
+            queries.upsert_track_features(tid, [2.0, 3.0], 2)
+        assert queries.get_track_features(tid) == [2.0, 3.0]
+
+    def test_cascade_deletes_feature_row(self, client):
+        tid = _seed_track("casc")
+        with transaction():
+            queries.upsert_track_features(tid, [1.0], 1)
+        with transaction():
+            get_conn = queries.get_conn
+            get_conn().execute("DELETE FROM tracks WHERE id = :id", {"id": tid})
+        assert queries.get_track_features(tid) is None
+
+    def test_needs_features_selects_unanalyzed(self, client):
+        tid = _seed_track("need")
+        needing = dict(queries.get_tracks_needing_features(1))
+        assert tid in needing
+
+    def test_needs_features_excludes_current_version(self, client):
+        tid = _seed_track("cur")
+        with transaction():
+            queries.upsert_track_features(tid, [1.0], 1)
+        assert tid not in dict(queries.get_tracks_needing_features(1))
+
+    def test_needs_features_includes_stale_version(self, client):
+        tid = _seed_track("stale")
+        with transaction():
+            queries.upsert_track_features(tid, [1.0], 1)  # old version
+        # Current version is now 2 → the v1 row is stale and must be reselected.
+        assert tid in dict(queries.get_tracks_needing_features(2))
+
+    def test_get_all_track_paths(self, client):
+        tid = _seed_track("allp")
+        paths = dict(queries.get_all_track_paths())
+        assert paths[tid] == "/allp-dir/song.mp3"
+
+
+# ===========================================================================
 # get_artist_cover_art_id (getCoverArt ar-N resolution)
 # ===========================================================================
 

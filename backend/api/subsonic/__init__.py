@@ -13,6 +13,7 @@ from . import (
     browsing,
     artist_info,
     album_info,
+    sonic,
 )
 
 

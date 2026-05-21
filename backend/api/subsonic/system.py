@@ -81,6 +81,10 @@ def get_open_subsonic_extensions(
         # its ClientInfo capabilities and learn whether we'll direct-play or
         # transcode a track. Implemented in api/subsonic/streaming.py.
         {"name": "transcoding", "versions": [1]},
+        # "sonicSimilarity": adds getSonicSimilarTracks + findSonicPath, backed
+        # by librosa DSP feature vectors. Implemented in api/subsonic/sonic.py;
+        # vectors are populated by the /api/analyze pass.
+        {"name": "sonicSimilarity", "versions": [1]},
     ]
 
     return responses.ok(

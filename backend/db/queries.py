@@ -179,6 +179,34 @@ def get_all_track_features() -> list[tuple[int, list[float]]]:
     return result
 
 
+def get_tracks_needing_features(feature_version: int) -> list[tuple[int, str]]:
+    """Tracks the sonic-analysis pass should (re)analyse: never analysed, or
+    analysed under an older feature_version. Returns (track_id, path) so the
+    pass can read each file. `feature_version` is the current layout version
+    from similarity.FEATURE_VERSION."""
+    rows = (
+        get_conn()
+        .execute(
+            """
+        SELECT t.id AS id, t.path AS path
+          FROM tracks t
+     LEFT JOIN track_features tf ON tf.track_id = t.id
+         WHERE tf.track_id IS NULL OR tf.feature_version <> :fv
+        """,
+            {"fv": feature_version},
+        )
+        .fetchall()
+    )
+    return [(row["id"], row["path"]) for row in rows]
+
+
+def get_all_track_paths() -> list[tuple[int, str]]:
+    """Every track as (track_id, path) — used by the force/backfill analysis
+    pass which re-analyses regardless of existing feature rows."""
+    rows = get_conn().execute("SELECT id, path FROM tracks").fetchall()
+    return [(row["id"], row["path"]) for row in rows]
+
+
 # ---------------------------------------------------------------------------
 # Starred items
 # ---------------------------------------------------------------------------

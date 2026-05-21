@@ -431,6 +431,71 @@ class TestGetTranscodeDecision:
 
 
 # ===========================================================================
+# 7c. getSonicSimilarTracks + findSonicPath ("sonicSimilarity" extension)
+# ===========================================================================
+
+
+def _seed_tracks_with_features(n, vectors):
+    """Seed n tracks (one folder/artist/album) and store the given feature
+    vectors. Returns the list of track ids in order."""
+    import time as _t
+    ids = []
+    with transaction():
+        folder = queries.add_music_folder(name="sonic", path="/sonic-dir")
+        artist = queries.upsert_artist("Sonic Artist")
+        album = queries.upsert_album(artist_id=artist, name="Sonic Album", year=2024)
+        now = int(_t.time())
+        for i in range(n):
+            ids.append(queries.upsert_track({
+                "album_id": album, "artist_id": artist, "music_folder_id": folder,
+                "path": f"/sonic-dir/{i}.mp3", "title": f"Song {i}", "track_number": i,
+                "disc_number": 1, "duration": 180, "bitrate": 320, "size": 1,
+                "suffix": "mp3", "content_type": "audio/mpeg", "year": 2024,
+                "genre": "x", "mtime": now, "content_hash": None, "last_scanned": now,
+            }))
+        for tid, vec in zip(ids, vectors):
+            queries.upsert_track_features(tid, vec, 1)
+    return ids
+
+
+class TestSonicSimilarity:
+    def test_extension_advertised(self, client):
+        names = {e["name"] for e in _ok(_sub(client, "getOpenSubsonicExtensions"))["openSubsonicExtensions"]}
+        assert "sonicSimilarity" in names
+
+    def test_similar_returns_nearest_excluding_self(self, client):
+        # Track 0 sits next to track 1; track 2 is far away.
+        ids = _seed_tracks_with_features(3, [[0.0, 0.0], [0.1, 0.0], [9.0, 9.0]])
+        body = _ok(_sub(client, "getSonicSimilarTracks", id=f"tr-{ids[0]}", count=5))
+        matches = body["sonicMatch"]
+        returned = [m["entry"]["id"] for m in matches]
+        assert f"tr-{ids[0]}" not in returned          # self excluded
+        assert returned[0] == f"tr-{ids[1]}"            # nearest first
+        assert all("similarity" in m for m in matches)  # flat {entry, similarity}
+
+    def test_similar_empty_when_no_features(self, client, seeded_library):
+        # Seeded track has no feature vector → empty sonicMatch, still ok envelope.
+        body = _ok(_sub(client, "getSonicSimilarTracks", id=seeded_library["track_prefix"]))
+        assert body["sonicMatch"] == []
+
+    def test_similar_bad_id_errors(self, client):
+        _err(_sub(client, "getSonicSimilarTracks", id="al-1"), code=70)
+
+    def test_path_pins_endpoints(self, client):
+        ids = _seed_tracks_with_features(
+            4, [[0.0, 0.0], [3.0, 3.0], [6.0, 6.0], [9.0, 9.0]]
+        )
+        body = _ok(_sub(
+            client, "findSonicPath",
+            startSongId=f"tr-{ids[0]}", endSongId=f"tr-{ids[3]}", count=4,
+        ))
+        path = [m["entry"]["id"] for m in body["sonicMatch"]]
+        assert path[0] == f"tr-{ids[0]}"
+        assert path[-1] == f"tr-{ids[3]}"
+        assert body["sonicMatch"][0]["similarity"] == 1.0  # start vs itself
+
+
+# ===========================================================================
 # 8. Playlists
 # ===========================================================================
 

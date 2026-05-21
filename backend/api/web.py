@@ -42,6 +42,11 @@ from backend.core import auth as auth_core
 from backend.core import deezer
 from backend.core import lastfm
 from backend.core import library as library_core
+from backend.core.sonic_analysis import (
+    start_analyze_async,
+    get_analyze_progress,
+    cancel_analyze,
+)
 from backend.db import maintenance as db_maintenance
 from backend.db import queries
 from backend.db.connection import transaction
@@ -282,6 +287,52 @@ def cancel_scan_endpoint(_=Depends(jwt_admin)):
     """Cancel a running scan. Admin only."""
     cancelled = cancel_scan()
     return {"cancelled": cancelled, "progress": _progress_dict()}
+
+
+# ---------------------------------------------------------------------------
+# Sonic analysis (admin-only write; user read)
+#
+# Populates track_features (librosa DSP vectors) that back the OpenSubsonic
+# sonicSimilarity endpoints. Separate from /scan because DSP analysis is
+# ~1-5s/track — far too slow to run on every scan.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/analyze")
+def trigger_analyze(force: bool = False, _=Depends(jwt_admin)):
+    """Start a sonic-analysis pass. Admin only.
+
+    Incremental by default (only tracks lacking a current feature row).
+    `?force=true` re-analyses the whole library — needed after a feature-layout
+    change. Returns immediately; poll GET /api/analyze for progress.
+    """
+    started = start_analyze_async(force=force)
+    return {"started": started, "progress": _analyze_progress_dict()}
+
+
+@router.get("/analyze")
+def analyze_progress(_=Depends(jwt_user)):
+    """Read-only sonic-analysis progress. Available to all authenticated users."""
+    return _analyze_progress_dict()
+
+
+@router.post("/analyze/cancel")
+def cancel_analyze_endpoint(_=Depends(jwt_admin)):
+    """Cancel a running analysis pass. Admin only."""
+    return {"cancelled": cancel_analyze(), "progress": _analyze_progress_dict()}
+
+
+def _analyze_progress_dict():
+    p = get_analyze_progress()
+    return {
+        "running": p.running,
+        "started_at": p.started_at,
+        "finished_at": p.finished_at,
+        "total": p.total,
+        "analyzed": p.analyzed,
+        "failed": p.failed,
+        "current": p.current,
+    }
 
 
 def _progress_dict():

@@ -154,3 +154,128 @@ def extract_features(path: str) -> list[float] | None:
             exc_info=True,
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Similarity math (pure — operates on already-loaded vectors, no DB/librosa).
+#
+# Callers load every track's vector via queries.get_all_track_features() and
+# pass the resulting list[(track_id, vector)] in. Keeping these functions pure
+# makes them unit-testable against synthetic matrices with no audio files.
+#
+# Standardisation is the load-bearing step: raw feature dimensions span wildly
+# different scales (tempo ~120, MFCC[0] ~±400, rms ~0.05). Without per-dimension
+# z-scoring, a couple of large-magnitude dims dominate every distance and the
+# rest become noise. We standardise the whole matrix per request — trivial cost
+# for a home library, and it means a changing library never needs a stored
+# scaler.
+# ---------------------------------------------------------------------------
+
+
+def _build_matrix(
+    all_features: list[tuple[int, list[float]]],
+) -> tuple[list[int], "np.ndarray"]:
+    ids = [tid for tid, _ in all_features]
+    mat = np.asarray([vec for _, vec in all_features], dtype=float)
+    return ids, mat
+
+
+def _standardize(mat: "np.ndarray") -> "np.ndarray":
+    """Per-dimension z-score. Dimensions with zero variance (constant across
+    the library) are left centred at 0 rather than dividing by zero."""
+    mu = mat.mean(axis=0)
+    sigma = mat.std(axis=0)
+    sigma = np.where(sigma == 0.0, 1.0, sigma)
+    return (mat - mu) / sigma
+
+
+def _cosine(a: "np.ndarray", b: "np.ndarray") -> float:
+    na = np.linalg.norm(a)
+    nb = np.linalg.norm(b)
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+
+def _score(cos: float) -> float:
+    """Map cosine [-1, 1] → similarity [0, 1] (spec: 1.0 identical, 0.0 max
+    dissimilar)."""
+    return (cos + 1.0) / 2.0
+
+
+def find_similar(
+    all_features: list[tuple[int, list[float]]],
+    query_id: int,
+    count: int,
+) -> list[tuple[int, float]]:
+    """Top-`count` tracks most sonically similar to `query_id`, most-similar
+    first, excluding the query track itself. Returns [(track_id, score)].
+    Empty list if the query track has no feature vector."""
+    if count <= 0 or not all_features:
+        return []
+    ids, mat = _build_matrix(all_features)
+    if query_id not in ids:
+        return []
+    std = _standardize(mat)
+    qi = ids.index(query_id)
+    qn = np.linalg.norm(std, axis=1)
+    qn = np.where(qn == 0.0, 1.0, qn)
+    query = std[qi]
+    query_norm = np.linalg.norm(query) or 1.0
+    cos = (std @ query) / (qn * query_norm)
+    order = np.argsort(cos)[::-1]
+    out: list[tuple[int, float]] = []
+    for idx in order:
+        if ids[idx] == query_id:
+            continue
+        out.append((ids[idx], _score(float(cos[idx]))))
+        if len(out) >= count:
+            break
+    return out
+
+
+def find_path(
+    all_features: list[tuple[int, list[float]]],
+    start_id: int,
+    end_id: int,
+    count: int,
+) -> list[tuple[int, float]]:
+    """An ordered path of up to `count` tracks from `start_id` to `end_id`
+    through feature space. We walk evenly-spaced points on the straight line
+    between the two standardised vectors and snap each to the nearest not-yet-
+    used track; endpoints are pinned. Each entry's score is its similarity to
+    the start track (so the path begins at 1.0). Returns [(track_id, score)].
+
+    Shorter than `count` if the library runs out of distinct tracks; empty if
+    either endpoint lacks a feature vector."""
+    count = max(count, 2)
+    ids, mat = _build_matrix(all_features)
+    if start_id not in ids or end_id not in ids:
+        return []
+    std = _standardize(mat)
+    si = ids.index(start_id)
+    ei = ids.index(end_id)
+    start_vec = std[si]
+
+    def scored(idx: int) -> tuple[int, float]:
+        return ids[idx], _score(_cosine(std[idx], start_vec))
+
+    if start_id == end_id:
+        return [scored(si)]
+
+    end_vec = std[ei]
+    used = {si, ei}
+    middle: list[int] = []
+    for step in range(1, count - 1):
+        t = step / (count - 1)
+        target = (1.0 - t) * start_vec + t * end_vec
+        dists = np.linalg.norm(std - target, axis=1)
+        for u in used:
+            dists[u] = np.inf
+        if not np.isfinite(dists.min()):
+            break  # ran out of unused tracks
+        chosen = int(np.argmin(dists))
+        used.add(chosen)
+        middle.append(chosen)
+
+    return [scored(i) for i in [si, *middle, ei]]
