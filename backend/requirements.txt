@@ -19,6 +19,8 @@ psycopg[binary,pool]>=3.1.0
 
 # ---- Audio metadata ---------------------------------------------------------
 mutagen==1.47.0
+librosa==0.11.0
+numpy==2.4.6
 
 # ---- Image processing -------------------------------------------------------
 # Used for on-the-fly cover-art resizing in getCoverArt. Pillow's bundled
