@@ -77,6 +77,19 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
     // has exactly one element.
     host.querySelector<HTMLButtonElement>("[data-play]")
         ?.addEventListener("click", () => player.playQueue([song], 0));
+
+    // Track radio: this song followed by its sonic neighbors as an endless-ish
+    // "more like this" queue. `similar` was already fetched above; if it's
+    // empty the track hasn't been analyzed yet, so point the user at Settings
+    // rather than silently playing a one-song "radio".
+    host.querySelector<HTMLButtonElement>("[data-radio]")
+        ?.addEventListener("click", () => {
+          if (similar.length === 0) {
+            window.alert("No sonic data for this track yet — run Sonic analysis in Settings.");
+            return;
+          }
+          player.playQueue([song, ...similar], 0);
+        });
     host.querySelector<HTMLButtonElement>("[data-queue]")
         ?.addEventListener("click", () => player.enqueue([song]));
     host.querySelector<HTMLButtonElement>("[data-add-to-playlist]")
@@ -145,6 +158,7 @@ function heroHtml(song: SubsonicSong): string {
         <div class="track-hero-info">
           <div class="actions">
             <button class="btn primary" data-play>▶ Play</button>
+            <button class="btn ghost" data-radio>≈ Radio</button>
             <button class="btn ghost" data-queue>+ Queue</button>
             <button class="btn ghost" data-add-to-playlist>+ Playlist</button>
           </div>

@@ -15,7 +15,10 @@
 //   - Album sections, in this order, skipping any that are empty:
 //     Albums, EPs, Singles, Compilations, Other.
 
-import { getArtistDetail, coverArtUrl, type ArtistAlbum, type SubsonicSong } from "../api";
+import {
+  getArtistDetail, getAlbum, getSonicSimilarTracks, coverArtUrl,
+  type ArtistAlbum, type SubsonicSong,
+} from "../api";
 import { albumCardHtml } from "./albums";
 import { escapeHtml } from "./_util";
 import { player, fmtDuration } from "../player";
@@ -72,9 +75,56 @@ export async function renderArtist(host: HTMLElement, id: string): Promise<void>
     `;
 
     if (appearances.length > 0) wireAppearanceClicks(host, appearances);
+    wireArtistRadio(host, grouped);
   } catch (e) {
     host.innerHTML = `<div class="empty">Could not load artist: ${escapeHtml((e as Error).message)}</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Artist radio — a sonic-similarity queue seeded by the artist's own music.
+//
+// We pick a random track from a random album in the catalog (so the radio
+// varies per click and isn't anchored to one song), then queue that seed
+// followed by its sonic neighbours from getSonicSimilarTracks. Empty result =
+// the library hasn't been analysed yet, so we point at Settings.
+// ---------------------------------------------------------------------------
+function allAlbumsFromGrouped(g: ArtistDetailGrouped): ArtistAlbum[] {
+  return [...g.albums, ...g.eps, ...g.singles, ...g.compilations, ...g.other];
+}
+
+function wireArtistRadio(host: HTMLElement, grouped: ArtistDetailGrouped): void {
+  const btn = host.querySelector<HTMLButtonElement>("[data-artist-radio]");
+  if (!btn) return;
+  const label = btn.textContent ?? "≈ Artist radio";
+
+  btn.addEventListener("click", async () => {
+    const albums = allAlbumsFromGrouped(grouped);
+    if (albums.length === 0) return;
+
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    try {
+      const album = albums[Math.floor(Math.random() * albums.length)];
+      const songs = (await getAlbum(album.id)).album.song ?? [];
+      if (songs.length === 0) {
+        window.alert("Couldn't start radio — no tracks found for this artist.");
+        return;
+      }
+      const seed = songs[Math.floor(Math.random() * songs.length)];
+      const similar = await getSonicSimilarTracks(String(seed.id), 24);
+      if (similar.length === 0) {
+        window.alert("No sonic data for this artist yet — run Sonic analysis in Settings.");
+        return;
+      }
+      player.playQueue([seed, ...similar], 0);
+    } catch (e) {
+      window.alert((e as Error).message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
 }
 
 function appearancesHtml(songs: SubsonicSong[]): string {
@@ -136,6 +186,13 @@ function heroHtml(name: string, imageUrl: string | null, albumCount: number): st
   // The image-based version uses the Last.fm artist photo as a backdrop.
   // Layout/responsive behavior lives in style.css (.artist-hero) so the
   // mobile collapse and font sizes can media-query cleanly.
+  // Only offer the radio when there's actually a catalog to seed from.
+  const radioBtn = albumCount > 0
+    ? `<div class="actions" style="margin-top:1rem">
+         <button class="btn ghost" data-artist-radio>≈ Artist radio</button>
+       </div>`
+    : "";
+
   if (imageUrl) {
     return `
       <header class="artist-hero stagger">
@@ -144,6 +201,7 @@ function heroHtml(name: string, imageUrl: string | null, albumCount: number): st
           <span class="label">— Artist</span>
           <h1>${escapeHtml(name)}</h1>
           <div class="meta">${albumCount} release${albumCount === 1 ? "" : "s"}</div>
+          ${radioBtn}
         </div>
       </header>
     `;
@@ -155,6 +213,7 @@ function heroHtml(name: string, imageUrl: string | null, albumCount: number): st
         — Artist<br/>
         ${albumCount} release${albumCount === 1 ? "" : "s"}
       </div>
+      ${radioBtn}
     </header>
   `;
 }
