@@ -4,9 +4,11 @@ from typing import Optional, Tuple
 
 from fastapi import Depends, Query, Response, Request
 
+from backend.config import get_settings
 from backend.db import queries
 from backend.core import library
 from backend.streaming import stream_track
+from backend.streaming import decision as transcode_decision
 
 from .helpers import (
     _double_register,
@@ -113,3 +115,77 @@ async def download(
     filename = f"{track['title']}.{track['suffix']}"
     resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return resp
+
+
+# ---- getTranscodeDecision (OpenSubsonic "transcoding" extension) -----------
+
+
+@_double_register("getTranscodeDecision")
+async def get_transcode_decision(
+    request: Request,
+    mediaId: str = Query(...),
+    mediaType: str = Query(...),
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+    """
+    Tell a client, before it streams, whether we'd serve a track untouched
+    or transcode it — and to what. Part of the OpenSubsonic `transcoding`
+    extension (advertised in getOpenSubsonicExtensions).
+
+    Wire shape
+    ----------
+    POST, with auth + `mediaId` + `mediaType` in the query string and a JSON
+    `ClientInfo` body describing the caller's playback capabilities. (We also
+    accept GET — the body is then empty, which yields a conservative
+    "must transcode" answer.) `mediaType` is `song` or `podcast`; we only
+    serve songs, so `podcast` is rejected.
+
+    The actual matching lives in backend/streaming/decision.py; this handler
+    just adapts a track row + the request body into that pure function and
+    serialises the result into the Subsonic envelope.
+    """
+    # We have no podcast support, so only `song` is meaningful here.
+    if mediaType.lower() != "song":
+        return responses.error(
+            responses.ERR_NOT_FOUND,
+            "Only 'song' media is supported",
+            fmt=ctx.fmt,
+            callback=ctx.callback,
+        )
+
+    track, err = _resolve_track(mediaId, ctx)
+    if err is not None:
+        return err
+
+    # Parse the ClientInfo body. A missing/empty/invalid body is not fatal —
+    # we treat it as "client declared nothing", which decide() reads as
+    # "can't direct-play" and falls back to a server-default transcode.
+    try:
+        client_info = await request.json()
+    except Exception:
+        client_info = {}
+    if not isinstance(client_info, dict):
+        client_info = {}
+
+    settings = get_settings()
+    suffix = track["suffix"]
+    # DB stores bitrate in kbps; the spec's StreamDetails wants bits/second.
+    src_bitrate = track.get("bitrate")
+    src_bitrate_bps = int(src_bitrate) * 1000 if src_bitrate else None
+
+    result = transcode_decision.decide(
+        source_container=suffix,
+        source_codec=transcode_decision.codec_for_suffix(suffix),
+        source_bitrate_bps=src_bitrate_bps,
+        # channels / samplerate / bitdepth aren't scanned yet → left None,
+        # which decide() treats as "can't evaluate" rather than guessing.
+        client=client_info,
+        transcoding_enabled=settings.transcoding_enabled,
+        default_transcode_format=settings.default_transcode_format,
+    )
+
+    return responses.ok(
+        {"transcodeDecision": result.to_dict()},
+        fmt=ctx.fmt,
+        callback=ctx.callback,
+    )

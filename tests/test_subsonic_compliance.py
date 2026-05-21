@@ -327,6 +327,77 @@ class TestGetCoverArt:
 
 
 # ===========================================================================
+# 7b. getTranscodeDecision (OpenSubsonic "transcoding" extension)
+# ===========================================================================
+
+
+def _transcode_post(client, body, **params):
+    """POST getTranscodeDecision with a JSON ClientInfo body + query auth."""
+    query = {
+        "u": "admin", "p": "adminpass",
+        "v": "1.16.1", "c": "pytest", "f": "json",
+        **params,
+    }
+    return client.post("/rest/getTranscodeDecision", params=query, json=body)
+
+
+class TestGetTranscodeDecision:
+    def test_extension_is_advertised(self, client):
+        body = _ok(_sub(client, "getOpenSubsonicExtensions"))
+        names = {e["name"] for e in body["openSubsonicExtensions"]}
+        assert "transcoding" in names
+
+    def test_unsupported_media_type_errors(self, client, seeded_library):
+        r = _transcode_post(
+            client, {}, mediaId=seeded_library["track_prefix"], mediaType="podcast"
+        )
+        _err(r, code=70)
+
+    def test_unknown_media_id_errors(self, client):
+        r = _transcode_post(client, {}, mediaId="tr-999999", mediaType="song")
+        _err(r, code=70)
+
+    def test_direct_play_for_capable_client(self, client, seeded_library):
+        # Seeded track is mp3@320; a client that direct-plays mp3 over http
+        # must get canDirectPlay=true and no transcodeStream.
+        body = {
+            "directPlayProfiles": [
+                {"containers": ["mp3"], "audioCodecs": ["mp3"], "protocols": ["http"]}
+            ]
+        }
+        r = _transcode_post(
+            client, body, mediaId=seeded_library["track_prefix"], mediaType="song"
+        )
+        td = _ok(r)["transcodeDecision"]
+        assert td["canDirectPlay"] is True
+        assert td["transcodeReason"] == []
+        assert "transcodeStream" not in td
+        # bitrate must be reported in bits/second (DB stores 320 kbps).
+        assert td["sourceStream"]["audioBitrate"] == 320000
+
+    def test_transcode_for_incapable_client(self, client, seeded_library):
+        # A client that only direct-plays flac can't play the mp3 source, so
+        # we must report a transcode target it accepts (mp3) with params.
+        body = {
+            "directPlayProfiles": [
+                {"containers": ["flac"], "audioCodecs": ["flac"], "protocols": []}
+            ],
+            "transcodingProfiles": [
+                {"container": "mp3", "audioCodec": "mp3", "protocol": "http"}
+            ],
+        }
+        r = _transcode_post(
+            client, body, mediaId=seeded_library["track_prefix"], mediaType="song"
+        )
+        td = _ok(r)["transcodeDecision"]
+        assert td["canDirectPlay"] is False
+        assert td["canTranscode"] is True
+        assert td["transcodeReason"] == ["ContainerNotSupported"]
+        assert td["transcodeStream"]["codec"] == "mp3"
+        assert td["transcodeParams"]  # non-empty opaque token
+
+
+# ===========================================================================
 # 8. Playlists
 # ===========================================================================
 
