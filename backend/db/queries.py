@@ -836,6 +836,27 @@ def get_artist(artist_id: int) -> Optional[Dict[str, Any]]:
     return _row_to_dict(row)
 
 
+def get_artist_cover_art_id(artist_id: int) -> Optional[str]:
+    """Artwork hash for an artist: the cover of their most recent album
+    that has one. Mirrors the representative-cover ordering used by the
+    artist index so getCoverArt(ar-N) matches what the UI shows."""
+    row = (
+        get_conn()
+        .execute(
+            """
+            SELECT cover_art_id
+              FROM albums
+             WHERE artist_id = :id AND cover_art_id IS NOT NULL
+          ORDER BY year DESC NULLS LAST, created_at DESC NULLS LAST
+             LIMIT 1
+            """,
+            {"id": artist_id},
+        )
+        .fetchone()
+    )
+    return row["cover_art_id"] if row else None
+
+
 def list_genre_count() -> List[Dict[str, Any]]:
     """All genres with their album and track counts."""
     # Aliases are double-quoted so Postgres preserves the camelCase

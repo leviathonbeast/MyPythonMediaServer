@@ -125,6 +125,39 @@ def get_song(
 # ---- getCoverArt ----------------------------------------------------------
 
 
+def _resolve_cover_art_id(raw: str) -> Optional[str]:
+    """Map a Subsonic id to its stored artwork hash.
+
+    Clients are inconsistent about what they pass as a cover-art id. Some
+    use the content hash we emit in `coverArt` (e.g. from track/album
+    serialisation); others pass the owning entity's id — getStarred even
+    emits `al-`/`ar-` prefixed coverArt deliberately, so a spec-following
+    client will hand those back here. Resolve the three prefixed forms to
+    the underlying album-cover hash:
+
+      tr-<n> → the track's album cover
+      al-<n> → the album's cover
+      ar-<n> → the artist's representative album cover
+
+    A value with no recognised prefix is assumed to already be a content
+    hash and returned unchanged (find_artwork_path validates its shape).
+    Returns None when the entity exists but has no artwork, or the id is
+    unresolvable.
+    """
+    if raw.startswith(library.TRACK_PREFIX):
+        _, rid = library.parse_id(raw)
+        track = queries.get_track(rid) if rid is not None else None
+        return track.get("cover_art_id") if track else None
+    if raw.startswith(library.ALBUM_PREFIX):
+        _, rid = library.parse_id(raw)
+        album = queries.get_album(rid) if rid is not None else None
+        return album.get("cover_art_id") if album else None
+    if raw.startswith(library.ARTIST_PREFIX):
+        _, rid = library.parse_id(raw)
+        return queries.get_artist_cover_art_id(rid) if rid is not None else None
+    return raw
+
+
 @_double_register("getCoverArt")
 def get_cover_art(
     request: Request,
@@ -133,23 +166,36 @@ def get_cover_art(
     ctx: SubsonicContext = Depends(subsonic_context),
 ) -> Response:
     """
-    Serve a cached cover art file by hash id, optionally resized.
+    Serve a cached cover art file by id, optionally resized.
+
+    `id` may be a content hash or a `tr-`/`al-`/`ar-` entity id (clients
+    differ — see _resolve_cover_art_id), which we resolve to the backing
+    hash before touching disk.
 
     When `size` is provided, returns a `<= size`x`<= size` JPEG variant
-    (aspect preserved). Variants are cached on disk as `<id>_<size>.jpg`
+    (aspect preserved). Variants are cached on disk as `<hash>_<size>.jpg`
     next to the source; the first request takes the resize hit (~50-200ms
     for a typical 2-3MB FLAC embed), every subsequent request is a plain
     file read. Sources smaller than `size` are served unchanged — no
     point upscaling.
 
-    The id is a content hash so the URL is immutable. Cache for a year
-    and use (id, size) as the ETag so different sizes don't collide and
-    so browsers get 304s on revalidation.
+    The ETag keys on the resolved (hash, size) rather than the request id,
+    so two entities sharing one album cover get the same ETag and browsers
+    get 304s on revalidation regardless of which id form they used.
     """
+    cover_id = _resolve_cover_art_id(id)
+    if cover_id is None:
+        return responses.error(
+            responses.ERR_NOT_FOUND,
+            "Cover art not found",
+            fmt=ctx.fmt,
+            callback=ctx.callback,
+        )
+
     if size is not None and size > 0:
-        path = artwork_module.resize_cached(id, size)
+        path = artwork_module.resize_cached(cover_id, size)
     else:
-        path = artwork_module.find_artwork_path(id)
+        path = artwork_module.find_artwork_path(cover_id)
 
     if path is None:
         return responses.error(
@@ -159,7 +205,7 @@ def get_cover_art(
             callback=ctx.callback,
         )
 
-    etag = f'"{id}-{size}"' if size else f'"{id}"'
+    etag = f'"{cover_id}-{size}"' if size else f'"{cover_id}"'
     cache_headers = {
         "Cache-Control": "public, max-age=31536000, immutable",
         "ETag": etag,

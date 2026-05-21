@@ -256,6 +256,93 @@ class TestListArtistsIndexed:
 
 
 # ===========================================================================
+# get_artist_cover_art_id (getCoverArt ar-N resolution)
+# ===========================================================================
+
+
+class TestGetArtistCoverArtId:
+    def test_picks_newest_album_with_cover(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Cover Artist")
+            old = queries.upsert_album(artist_id=artist, name="Old", year=2001)
+            new = queries.upsert_album(artist_id=artist, name="New", year=2023)
+            queries.set_album_cover_art(old, "0000000000000001")
+            queries.set_album_cover_art(new, "0000000000000002")
+        assert queries.get_artist_cover_art_id(artist) == "0000000000000002"
+
+    def test_skips_albums_without_cover(self, client):
+        """An artist whose newest album has no cover falls back to an
+        older album that does — NULL covers must not win the ORDER BY."""
+        with transaction():
+            artist = queries.upsert_artist("Partial Cover Artist")
+            queries.upsert_album(artist_id=artist, name="Newer No Cover", year=2024)
+            older = queries.upsert_album(artist_id=artist, name="Older", year=2010)
+            queries.set_album_cover_art(older, "00000000000000aa")
+        assert queries.get_artist_cover_art_id(artist) == "00000000000000aa"
+
+    def test_returns_none_when_no_covers(self, client):
+        with transaction():
+            artist = queries.upsert_artist("Naked Artist")
+            queries.upsert_album(artist_id=artist, name="Bare", year=2024)
+        assert queries.get_artist_cover_art_id(artist) is None
+
+
+# ===========================================================================
+# _resolve_cover_art_id (getCoverArt prefixed-id → hash resolution)
+# ===========================================================================
+
+
+class TestResolveCoverArtId:
+    """getCoverArt must accept both the content hash and prefixed entity
+    ids, because getStarred emits al-/ar- coverArt and many clients pass a
+    song id straight through. Regression for clients (e.g. Feishin/Arpeggi)
+    that 404'd on tr- ids before resolution was added."""
+
+    def test_track_id_resolves_to_album_cover(self, client):
+        from backend.api.subsonic.albums import _resolve_cover_art_id
+
+        with transaction():
+            artist = queries.upsert_artist("Res Artist")
+            album = queries.upsert_album(artist_id=artist, name="Res Album", year=2024)
+            queries.set_album_cover_art(album, "00000000000000bb")
+            folder = queries.add_music_folder(name="res", path="/res-folder")
+            track = queries.upsert_track(_track_row(
+                path="/res/track.mp3", artist_id=artist, album_id=album,
+                music_folder_id=folder,
+            ))
+        assert _resolve_cover_art_id(f"tr-{track}") == "00000000000000bb"
+
+    def test_album_id_resolves_to_its_cover(self, client):
+        from backend.api.subsonic.albums import _resolve_cover_art_id
+
+        with transaction():
+            artist = queries.upsert_artist("Alb Artist")
+            album = queries.upsert_album(artist_id=artist, name="Alb", year=2024)
+            queries.set_album_cover_art(album, "00000000000000cc")
+        assert _resolve_cover_art_id(f"al-{album}") == "00000000000000cc"
+
+    def test_artist_id_resolves_to_representative_cover(self, client):
+        from backend.api.subsonic.albums import _resolve_cover_art_id
+
+        with transaction():
+            artist = queries.upsert_artist("Art Artist")
+            album = queries.upsert_album(artist_id=artist, name="A", year=2024)
+            queries.set_album_cover_art(album, "00000000000000dd")
+        assert _resolve_cover_art_id(f"ar-{artist}") == "00000000000000dd"
+
+    def test_bare_hash_passes_through_unchanged(self, client):
+        from backend.api.subsonic.albums import _resolve_cover_art_id
+
+        # No recognised prefix → assumed to already be a content hash.
+        assert _resolve_cover_art_id("0487ee2dffeb6a9f") == "0487ee2dffeb6a9f"
+
+    def test_unknown_track_id_resolves_to_none(self, client):
+        from backend.api.subsonic.albums import _resolve_cover_art_id
+
+        assert _resolve_cover_art_id("tr-999999") is None
+
+
+# ===========================================================================
 # list_song_by_genre
 # ===========================================================================
 
