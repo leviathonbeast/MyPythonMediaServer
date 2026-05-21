@@ -151,6 +151,14 @@ def _migration_006_add_track_stream_props(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE tracks ADD COLUMN bit_depth INTEGER")
 
 
+def _migration_007_add_track_features(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS track_features(track_id INTEGER NOT NULL,
+        features TEXT NOT NULL, feature_version INTEGER NOT NULL, analysed_at INTEGER NOT NULL, PRIMARY KEY(track_id), FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE);
+        
+        """)
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 # Future schema changes start at version 4.
 MIGRATIONS: List[Migration] = [
@@ -160,6 +168,7 @@ MIGRATIONS: List[Migration] = [
     (4, _migration_004_add_current_pos_to_play_queues),
     (5, _migration_user_external_accounts),
     (6, _migration_006_add_track_stream_props),
+    (7, _migration_007_add_track_features),
 ]
 
 

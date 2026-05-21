@@ -17,6 +17,7 @@ config.yaml
 *.db-journal
 *.db-wal
 *.db-shm
+*.flac
 
 # OS / editor
 .DS_Store
