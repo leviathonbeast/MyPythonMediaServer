@@ -21,6 +21,7 @@ Performance notes:
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -113,6 +114,69 @@ def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
 
 def _rows_to_dicts(rows) -> List[Dict[str, Any]]:
     return [{k: row[k] for k in row.keys()} for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Similarity Queries
+# ---------------------------------------------------------------------------
+
+
+def upsert_track_features(
+    track_id: int, features: list[float], feature_version: int
+) -> None:
+    get_conn().execute(
+        """
+    INSERT INTO track_features (track_id, features, feature_version, analysed_at) values(:track_id, :features, :feature_version, :analysed_at)
+    ON CONFLICT(track_id) DO UPDATE SET features=excluded.features, feature_version=excluded.feature_version, analysed_at=excluded.analysed_at
+    """,
+        {
+            "track_id": track_id,
+            "features": json.dumps(features),
+            "feature_version": feature_version,
+            "analysed_at": int(time.time()),
+        },
+    )
+
+
+# get_track_features(track_id) -> list[float] | None — SELECT features where track_id=:id; json.loads the row, or None if there's no row.
+# get_all_track_features() -> list[tuple[int, list[float]]] — SELECT all (track_id, features); json.loads each, return (id, vector) tuples.
+
+
+def get_track_features(track_id: int) -> list[float] | None:
+    row = (
+        get_conn()
+        .execute(
+            """
+SELECT features FROM track_features WHERE track_id= :track_id""",
+            {"track_id": track_id},
+        )
+        .fetchone()
+    )
+
+    if row is None:
+        return None
+
+    features = row["features"]
+
+    if features is None:
+        return None
+
+    return json.loads(features)
+
+
+def get_all_track_features() -> list[tuple[int, list[float]]]:
+
+    rows = get_conn().execute("""
+        SELECT track_id, features
+        FROM track_features
+        """).fetchall()
+
+    result: list[tuple[int, list[float]]] = []
+
+    for row in rows:
+        result.append((row["track_id"], json.loads(row["features"])))
+
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 EXPECTED_DIMS = 44
+FEATURE_VERSION = 1
 
 
 def extract_features(path: str) -> list[float] | None:
