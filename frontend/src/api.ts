@@ -725,8 +725,14 @@ export async function getScanProgress(): Promise<ScanProgress> {
   return apiGet<ScanProgress>("/api/scan");
 }
 
-export async function startScan(): Promise<{ started: boolean; progress: ScanProgress }> {
-  return apiPost<{ started: boolean; progress: ScanProgress }>("/api/scan", {});
+// `force` re-parses every file even if unchanged (slower) — used to backfill
+// metadata columns added after the library was first scanned, which a normal
+// scan would skip. Maps to POST /api/scan?force=true.
+export async function startScan(
+  force = false,
+): Promise<{ started: boolean; progress: ScanProgress }> {
+  const path = force ? "/api/scan?force=true" : "/api/scan";
+  return apiPost<{ started: boolean; progress: ScanProgress }>(path, {});
 }
 
 export async function cancelScan(): Promise<{ cancelled: boolean; progress: ScanProgress }> {

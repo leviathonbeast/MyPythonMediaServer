@@ -42,7 +42,13 @@ export async function renderScanSection(
       <div data-scanstate>—</div>
       <div style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap">
         <button class="btn primary" data-rescan>▶ Start a fresh scan</button>
+        <button class="btn ghost"  data-forcescan>⟳ Force rescan (backfill)</button>
         <button class="btn ghost"  data-cancelscan style="display:none">✕ Cancel scan</button>
+      </div>
+      <div style="margin-top:.5rem;font-family:var(--font-mono);font-size:var(--t-micro);color:var(--muted)">
+        A normal scan skips files that haven't changed. Force rescan re-reads
+        every file — slower, but needed to backfill new metadata (e.g. sample
+        rate / bit depth) on a library that was scanned before those were added.
       </div>
     </div>
   `);
@@ -52,6 +58,7 @@ export async function renderScanSection(
   // re-rendered, which means their click handlers (bound below) survive.
   const stateEl   = host.querySelector<HTMLElement>("[data-scanstate]")!;
   const startBtn  = host.querySelector<HTMLButtonElement>("[data-rescan]")!;
+  const forceBtn  = host.querySelector<HTMLButtonElement>("[data-forcescan]")!;
   const cancelBtn = host.querySelector<HTMLButtonElement>("[data-cancelscan]")!;
 
   // Local state for the poll timer. Stays scoped to this section — the
@@ -75,6 +82,7 @@ export async function renderScanSection(
 
     stateEl.innerHTML = scanHtml(progress);
     startBtn.disabled = progress.running;
+    forceBtn.disabled = progress.running;
     cancelBtn.style.display = progress.running ? "" : "none";
 
     if (progress.running) {
@@ -101,9 +109,11 @@ export async function renderScanSection(
 
   // Button handlers. Bound once; the buttons themselves are never
   // re-rendered, so we don't need to re-bind on each refresh.
-  startBtn.addEventListener("click", async () => {
+  // Shared by both the normal and force buttons — only the `force` flag
+  // (and the confirm prompt) differ.
+  const runScan = async (force: boolean) => {
     try {
-      const result = await startScan();
+      const result = await startScan(force);
       if (!result.started) {
         alert("A scan is already in progress. Wait for it to finish or cancel it first.");
         return;
@@ -113,6 +123,18 @@ export async function renderScanSection(
       return;
     }
     await refresh();
+  };
+
+  startBtn.addEventListener("click", () => void runScan(false));
+
+  forceBtn.addEventListener("click", () => {
+    // Force rescan re-reads every file, so it's much slower than a normal
+    // scan on a large library. Confirm before kicking it off.
+    if (!confirm(
+      "Force rescan re-reads every file in your library to backfill metadata. "
+      + "This is slower than a normal scan. Continue?"
+    )) return;
+    void runScan(true);
   });
 
   cancelBtn.addEventListener("click", async () => {
