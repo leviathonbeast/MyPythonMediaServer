@@ -1,0 +1,39 @@
+# Reference systemd unit for Muse.
+#
+# Prefer ./deploy/install-service.sh — it generates this with the correct
+# paths/user for your checkout automatically. This file is for manual installs
+# or to read what the service does.
+#
+# Manual install:
+#   1. Edit User/Group/WorkingDirectory/ExecStart below to match your box.
+#   2. sudo cp deploy/muse.service /etc/systemd/system/muse.service
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now muse
+#
+# Secrets (admin_password, jwt_secret) are read from config.yaml in
+# WorkingDirectory — no EnvironmentFile needed unless you prefer MUSE_* env vars.
+
+[Unit]
+Description=Muse music server
+After=network-online.target
+Wants=network-online.target
+# If your music is on a network mount, uncomment and point at it:
+# RequiresMountsFor=/mnt/music
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/home/user/MediaServer/muse-server
+ExecStart=/home/user/MediaServer/muse-server/.venv/bin/python -m backend.main
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+SyslogIdentifier=muse
+# Light hardening. Not ProtectHome — app/config/data live under /home.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
