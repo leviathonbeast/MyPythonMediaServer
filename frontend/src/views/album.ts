@@ -118,10 +118,14 @@ export async function renderAlbum(host: HTMLElement, id: string): Promise<void> 
 function trackRowHtml(s: SubsonicSong, idx: number): string {
   const trackNum = s.track ?? idx + 1;
   const artistCell = renderArtistLinks(s.artist, s.artistId);
+  // Subtle marker on tracks that carry lyrics (getAlbum sets hasLyrics).
+  const lyricFlag = s.hasLyrics
+    ? ` <span class="lyric-tag" title="Lyrics available">lyrics</span>`
+    : "";
   return `
     <tr data-idx="${idx}" data-tid="${escapeHtml(String(s.id))}" style="cursor:pointer">
       <td class="num">${trackNum}</td>
-      <td class="title"><a href="#/track/${encodeURIComponent(s.id)}">${escapeHtml(s.title)}</a></td>
+      <td class="title"><a href="#/track/${encodeURIComponent(s.id)}">${escapeHtml(s.title)}</a>${lyricFlag}</td>
       <td>${artistCell}</td>
       <td class="duration">${fmtDuration(s.duration)}</td>
     </tr>

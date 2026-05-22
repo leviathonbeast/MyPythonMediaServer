@@ -1105,6 +1105,22 @@ a:hover { color: var(--accent); }
   opacity: 1;
 }
 
+/* Small "has lyrics" marker shown after a track title in listings. Mono
+   micro-caps to match the editorial labels elsewhere; quiet enough not to
+   compete with the title. */
+.lyric-tag {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0 0.35em;
+  margin-left: 0.5em;
+  vertical-align: middle;
+}
+
 /* Buttons */
 .btn {
   font-family: var(--font-mono);

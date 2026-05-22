@@ -397,6 +397,9 @@ export interface SubsonicSong {
   discNumber?: number;
   starred?: string;
   lyrics?: string | null; //** Lyrics implementation */
+  /** Web-UI hint: track has lyrics (set by getAlbum / getSong). Omitted by
+   * queries that don't select lyrics info, so treat undefined as "unknown". */
+  hasLyrics?: boolean;
 }
 
 export async function getIndexes(): Promise<{ index: SubsonicIndex[] }> {

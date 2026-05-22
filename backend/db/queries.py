@@ -1525,6 +1525,7 @@ def list_album_tracks(album_id: int) -> List[Dict[str, Any]]:
             """
         SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
                t.channels, t.sample_rate, t.bit_depth,
+               (t.lyrics IS NOT NULL AND t.lyrics <> '') AS has_lyrics,
                t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
                t.artist_id, ar.name AS artist_name,
                t.album_id,  al.name AS album_name, al.cover_art_id

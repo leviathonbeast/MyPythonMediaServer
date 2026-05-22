@@ -743,6 +743,21 @@ class TestLyrics:
         names = {e["name"] for e in _ok(_sub(client, "getOpenSubsonicExtensions"))["openSubsonicExtensions"]}
         assert "songLyrics" in names
 
+    def test_get_song_reports_has_lyrics(self, client):
+        ids = _seed_track_with_lyrics("plain words")
+        song = _ok(_sub(client, "getSong", id=ids["track"]))["song"]
+        assert song["hasLyrics"] is True
+
+    def test_album_marks_tracks_with_lyrics(self, client):
+        ids = _seed_track_with_lyrics("[00:01.00]hi")
+        album = _ok(_sub(client, "getAlbum", id=ids["album"]))["album"]
+        assert album["song"][0]["hasLyrics"] is True
+
+    def test_album_marks_tracks_without_lyrics(self, client):
+        ids = _seed_track_with_lyrics(None)
+        album = _ok(_sub(client, "getAlbum", id=ids["album"]))["album"]
+        assert album["song"][0]["hasLyrics"] is False
+
 
 class TestBookmarks:
     def test_create_list_delete_roundtrip(self, client, seeded_library):

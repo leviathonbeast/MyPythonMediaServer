@@ -324,6 +324,17 @@ def track_to_subsonic(t: Dict[str, Any]) -> Dict[str, Any]:
     if bit_depth:
         out["bitDepth"] = bit_depth
 
+    # "Has lyrics" hint for the web UI (a small marker on tracklist rows).
+    # Only emit when the source query actually carried lyrics info: get_track
+    # selects t.* (so it has the full `lyrics` text), and list_album_tracks
+    # selects a `has_lyrics` boolean. Queries that select neither omit the key
+    # entirely rather than report a misleading hasLyrics:false. Not a standard
+    # Subsonic field — third-party clients ignore unknown keys.
+    if "has_lyrics" in t:
+        out["hasLyrics"] = bool(t["has_lyrics"])
+    elif "lyrics" in t:
+        out["hasLyrics"] = bool(t.get("lyrics"))
+
     return out
 
 
