@@ -277,6 +277,54 @@ def unstar(
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 
+# Maps a parsed id kind to (ratings.item_type, existence-check query). setRating
+# accepts artist/album/song ids; we validate the target exists before storing so
+# a typo'd id becomes a clean ERR_NOT_FOUND rather than a dangling rating row.
+_RATING_KINDS = {
+    "track": ("track", queries.get_track),
+    "album": ("album", queries.get_album),
+    "artist": ("artist", queries.get_artist),
+}
+
+
+@_double_register("setRating")
+def set_rating(
+    id: str = Query(...),
+    rating: int = Query(...),
+    ctx: SubsonicContext = Depends(subsonic_context),
+) -> Response:
+    """Set this user's 1–5 rating for a track/album/artist. rating=0 removes it.
+
+    Stored per-user in the `ratings` table and surfaced back as userRating /
+    averageRating on getSong, getAlbum and getArtist.
+    """
+    if rating < 0 or rating > 5:
+        return responses.error(
+            responses.ERR_PARAMETER, "rating must be between 0 and 5",
+            fmt=ctx.fmt, callback=ctx.callback,
+        )
+    kind, rid = library.parse_id(id)
+    mapping = _RATING_KINDS.get(kind or "")
+    if mapping is None or rid is None:
+        return responses.error(
+            responses.ERR_NOT_FOUND, "Not a ratable id",
+            fmt=ctx.fmt, callback=ctx.callback,
+        )
+    item_type, exists = mapping
+    if exists(rid) is None:
+        return responses.error(
+            responses.ERR_NOT_FOUND, "Item not found",
+            fmt=ctx.fmt, callback=ctx.callback,
+        )
+
+    with transaction():
+        if rating == 0:
+            queries.delete_rating(ctx.user_id, item_type, rid)
+        else:
+            queries.set_rating(ctx.user_id, item_type, rid, rating)
+    return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
+
+
 @_double_register("getNowPlaying")
 def get_now_playing(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
     entries = now_playing.list_active(within_seconds=300)  # 5-min TTL

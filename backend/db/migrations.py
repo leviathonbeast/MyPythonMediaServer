@@ -155,8 +155,101 @@ def _migration_007_add_track_features(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS track_features(track_id INTEGER NOT NULL,
         features TEXT NOT NULL, feature_version INTEGER NOT NULL, analysed_at INTEGER NOT NULL, PRIMARY KEY(track_id), FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE);
-        
+
         """)
+
+
+def _migration_008_add_track_lyrics(conn: sqlite3.Connection) -> None:
+    """Add a nullable `lyrics` column to tracks.
+
+    Backs getLyrics / getLyricsBySongId (OpenSubsonic songLyrics extension).
+    Populated by the scanner from embedded tags (USLT / ©lyr / Vorbis LYRICS);
+    existing rows stay NULL until a rescan repopulates them — same instant
+    no-rewrite ADD COLUMN we used for the stream-property columns. We store
+    plain (unsynced) lyrics; getLyricsBySongId presents them as a single
+    unsynced structuredLyrics block.
+    """
+    conn.execute("ALTER TABLE tracks ADD COLUMN lyrics TEXT")
+
+
+def _migration_009_add_bookmarks(conn: sqlite3.Connection) -> None:
+    """Per-user playback bookmarks (Subsonic getBookmarks/create/delete).
+
+    One bookmark per (user, track): re-bookmarking the same track moves the
+    saved position rather than creating duplicates, which is why (user_id,
+    track_id) is the primary key (also the upsert conflict target). `position`
+    is the playback offset in milliseconds, matching the Subsonic param.
+
+    Migration-only (not in schema.sql) so a fresh install — which runs
+    migration 1 then every later migration — doesn't try to create it twice.
+    Both FKs cascade so deleting a user or a track drops their bookmarks.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bookmarks(
+            user_id  INTEGER NOT NULL,
+            track_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            comment  TEXT,
+            created  INTEGER NOT NULL,
+            changed  INTEGER NOT NULL,
+            PRIMARY KEY (user_id, track_id),
+            FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+
+def _migration_010_add_internet_radio(conn: sqlite3.Connection) -> None:
+    """Server-wide internet radio stations (Subsonic getInternetRadioStations
+    + create/update/delete).
+
+    Stations are global (not per-user) — that's the Subsonic model, and it's
+    what clients expect. Clients address a station by its server-assigned id,
+    so we need an auto-incrementing primary key; the syntax differs per dialect
+    (SQLite AUTOINCREMENT vs Postgres SERIAL), so we branch the same way
+    migration 1 picks its schema file. Everything else is dialect-neutral.
+    """
+    if get_dialect() == DIALECT_POSTGRES:
+        id_col = "id SERIAL PRIMARY KEY"
+    else:
+        id_col = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS internet_radio_stations(
+            {id_col},
+            name         TEXT NOT NULL,
+            stream_url   TEXT NOT NULL,
+            homepage_url TEXT,
+            created      INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _migration_011_add_ratings(conn: sqlite3.Connection) -> None:
+    """Per-user 1–5 star ratings of tracks/albums/artists (Subsonic setRating).
+
+    Polymorphic like `starred`: (item_type, item_id) addresses any of the three
+    entity kinds, so — exactly as with starred — we only FK user_id. A rating
+    for a since-deleted item is harmless: nothing joins to it and a re-create
+    with the same id is astronomically unlikely. rating is constrained to 1–5;
+    a setRating of 0 (the spec's "remove rating") deletes the row instead.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ratings(
+            user_id   INTEGER NOT NULL,
+            item_type TEXT NOT NULL,
+            item_id   INTEGER NOT NULL,
+            rating    INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+            rated_at  INTEGER NOT NULL,
+            PRIMARY KEY (user_id, item_type, item_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
 
 
 # Order matters. Append new migrations; never reorder existing ones.
@@ -169,6 +262,10 @@ MIGRATIONS: List[Migration] = [
     (5, _migration_user_external_accounts),
     (6, _migration_006_add_track_stream_props),
     (7, _migration_007_add_track_features),
+    (8, _migration_008_add_track_lyrics),
+    (9, _migration_009_add_bookmarks),
+    (10, _migration_010_add_internet_radio),
+    (11, _migration_011_add_ratings),
 ]
 
 

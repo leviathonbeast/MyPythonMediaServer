@@ -669,6 +669,182 @@ class TestAuthErrors:
 
 
 # ===========================================================================
+# 10b. Lyrics, bookmarks, internet radio, ratings, tokenInfo
+# ===========================================================================
+
+
+def _seed_track_with_lyrics(lyrics: str | None):
+    """Seed one artist/album/track, optionally storing lyrics. Returns the
+    Subsonic ids the endpoints take."""
+    with transaction():
+        folder = queries.add_music_folder(name="lyr", path="/lyr-dir")
+        artist = queries.upsert_artist("Lyric Artist")
+        album = queries.upsert_album(artist_id=artist, name="Lyric Album", year=2024)
+        now = 1_700_000_000
+        tid = queries.upsert_track({
+            "album_id": album, "artist_id": artist, "music_folder_id": folder,
+            "path": "/lyr-dir/song.mp3", "title": "Lyric Song", "track_number": 1,
+            "disc_number": 1, "duration": 200, "bitrate": 320, "size": 1,
+            "suffix": "mp3", "content_type": "audio/mpeg", "year": 2024,
+            "genre": "x", "mtime": now, "content_hash": None, "last_scanned": now,
+            "lyrics": lyrics,
+        })
+    return {
+        "track": f"tr-{tid}", "album": f"al-{album}", "artist": f"ar-{artist}",
+    }
+
+
+class TestLyrics:
+    def test_lyrics_by_song_id_returns_structured_lines(self, client):
+        ids = _seed_track_with_lyrics("line one\nline two\nline three")
+        body = _ok(_sub(client, "getLyricsBySongId", id=ids["track"]))
+        blocks = body["lyricsList"]["structuredLyrics"]
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block["synced"] is False
+        assert [ln["value"] for ln in block["line"]] == ["line one", "line two", "line three"]
+        assert block["displayTitle"] == "Lyric Song"
+
+    def test_lyrics_by_song_id_empty_when_none(self, client):
+        ids = _seed_track_with_lyrics(None)
+        body = _ok(_sub(client, "getLyricsBySongId", id=ids["track"]))
+        assert body["lyricsList"]["structuredLyrics"] == []
+
+    def test_lyrics_by_song_id_synced_lrc(self, client):
+        # An LRC blob (embedded or from a .lrc sidecar) comes back synced, with
+        # per-line millisecond start times.
+        ids = _seed_track_with_lyrics("[00:01.00]first\n[00:03.50]second")
+        body = _ok(_sub(client, "getLyricsBySongId", id=ids["track"]))
+        block = body["lyricsList"]["structuredLyrics"][0]
+        assert block["synced"] is True
+        assert block["line"][0] == {"start": 1000, "value": "first"}
+        assert block["line"][1] == {"start": 3500, "value": "second"}
+
+    def test_get_lyrics_strips_timestamps(self, client):
+        # The legacy getLyrics is plain-text only — LRC tags must be gone.
+        _seed_track_with_lyrics("[00:01.00]alpha\n[00:02.00]beta")
+        body = _ok(_sub(client, "getLyrics", artist="Lyric Artist", title="Lyric Song"))
+        assert body["lyrics"]["value"] == "alpha\nbeta"
+
+    def test_lyrics_by_song_id_bad_id_errors(self, client):
+        _err(_sub(client, "getLyricsBySongId", id="al-1"), code=70)
+
+    def test_get_lyrics_by_name(self, client):
+        _seed_track_with_lyrics("hello world")
+        body = _ok(_sub(client, "getLyrics", artist="Lyric Artist", title="Lyric Song"))
+        assert body["lyrics"]["value"] == "hello world"
+        assert body["lyrics"]["artist"] == "Lyric Artist"
+
+    def test_get_lyrics_miss_is_empty_not_error(self, client):
+        body = _ok(_sub(client, "getLyrics", artist="Nobody", title="Nothing"))
+        assert body["lyrics"]["value"] == ""
+
+    def test_songLyrics_extension_advertised(self, client):
+        names = {e["name"] for e in _ok(_sub(client, "getOpenSubsonicExtensions"))["openSubsonicExtensions"]}
+        assert "songLyrics" in names
+
+
+class TestBookmarks:
+    def test_create_list_delete_roundtrip(self, client, seeded_library):
+        tid = seeded_library["track_prefix"]
+        _ok(_sub(client, "createBookmark", id=tid, position=42000, comment="here"))
+
+        body = _ok(_sub(client, "getBookmarks"))
+        marks = body["bookmarks"]["bookmark"]
+        assert len(marks) == 1
+        assert marks[0]["position"] == 42000
+        assert marks[0]["comment"] == "here"
+        assert marks[0]["entry"]["id"] == tid
+        assert marks[0]["username"] == "admin"
+
+        _ok(_sub(client, "deleteBookmark", id=tid))
+        assert _ok(_sub(client, "getBookmarks"))["bookmarks"]["bookmark"] == []
+
+    def test_create_moves_existing(self, client, seeded_library):
+        tid = seeded_library["track_prefix"]
+        _ok(_sub(client, "createBookmark", id=tid, position=1000))
+        _ok(_sub(client, "createBookmark", id=tid, position=9000))
+        marks = _ok(_sub(client, "getBookmarks"))["bookmarks"]["bookmark"]
+        assert len(marks) == 1            # upsert, not duplicate
+        assert marks[0]["position"] == 9000
+
+    def test_create_bad_id_errors(self, client):
+        _err(_sub(client, "createBookmark", id="tr-999999", position=0), code=70)
+
+    def test_bookmarks_are_per_user(self, client, seeded_library):
+        # admin's bookmark must not show up for the regular user.
+        _ok(_sub(client, "createBookmark", id=seeded_library["track_prefix"], position=5))
+        body = _ok(_sub(client, "getBookmarks", admin=False))
+        assert body["bookmarks"]["bookmark"] == []
+
+
+class TestInternetRadio:
+    def test_create_list_update_delete(self, client):
+        _ok(_sub(client, "createInternetRadioStation",
+                 streamUrl="http://stream/1", name="Radio One",
+                 homepageUrl="http://home/1"))
+        stations = _ok(_sub(client, "getInternetRadioStations"))["internetRadioStations"]["internetRadioStation"]
+        assert len(stations) == 1
+        sid = stations[0]["id"]
+        assert stations[0]["name"] == "Radio One"
+        assert stations[0]["streamUrl"] == "http://stream/1"
+        assert stations[0]["homePageUrl"] == "http://home/1"
+
+        _ok(_sub(client, "updateInternetRadioStation",
+                 id=sid, streamUrl="http://stream/2", name="Radio Two"))
+        again = _ok(_sub(client, "getInternetRadioStations"))["internetRadioStations"]["internetRadioStation"]
+        assert again[0]["name"] == "Radio Two"
+        assert again[0]["streamUrl"] == "http://stream/2"
+
+        _ok(_sub(client, "deleteInternetRadioStation", id=sid))
+        empty = _ok(_sub(client, "getInternetRadioStations"))["internetRadioStations"]["internetRadioStation"]
+        assert empty == []
+
+    def test_update_unknown_id_errors(self, client):
+        _err(_sub(client, "updateInternetRadioStation",
+                  id="999999", streamUrl="x", name="y"), code=70)
+
+    def test_delete_unknown_id_errors(self, client):
+        _err(_sub(client, "deleteInternetRadioStation", id="999999"), code=70)
+
+
+class TestSetRating:
+    def test_rate_track_surfaces_on_getSong(self, client, seeded_library):
+        tid = seeded_library["track_prefix"]
+        _ok(_sub(client, "setRating", id=tid, rating=4))
+        song = _ok(_sub(client, "getSong", id=tid))["song"]
+        assert song["userRating"] == 4
+        assert song["averageRating"] == 4.0
+
+    def test_rate_album_and_artist(self, client, seeded_library):
+        _ok(_sub(client, "setRating", id=seeded_library["album_prefix"], rating=5))
+        _ok(_sub(client, "setRating", id=seeded_library["artist_prefix"], rating=3))
+        album = _ok(_sub(client, "getAlbum", id=seeded_library["album_prefix"]))["album"]
+        artist = _ok(_sub(client, "getArtist", id=seeded_library["artist_prefix"]))["artist"]
+        assert album["userRating"] == 5
+        assert artist["userRating"] == 3
+
+    def test_rating_zero_removes(self, client, seeded_library):
+        tid = seeded_library["track_prefix"]
+        _ok(_sub(client, "setRating", id=tid, rating=2))
+        _ok(_sub(client, "setRating", id=tid, rating=0))
+        song = _ok(_sub(client, "getSong", id=tid))["song"]
+        assert "userRating" not in song      # cleared
+
+    def test_rating_out_of_range_errors(self, client, seeded_library):
+        _err(_sub(client, "setRating", id=seeded_library["track_prefix"], rating=9), code=10)
+
+    def test_rating_bad_id_errors(self, client):
+        _err(_sub(client, "setRating", id="tr-999999", rating=3), code=70)
+
+
+class TestTokenInfo:
+    def test_returns_username(self, client):
+        body = _ok(_sub(client, "tokenInfo"))
+        assert body["tokenInfo"]["username"] == "admin"
+
+
+# ===========================================================================
 # 11. KNOWN-MISSING endpoints
 # ---------------------------------------------------------------------------
 # Each test below documents an endpoint that real Subsonic clients probe
@@ -682,22 +858,17 @@ class TestMissingEndpoints:
     def test_getPlayQueue(self, client):
         _ok(_sub(client, "getPlayQueue"))
 
-    @pytest.mark.xfail(reason="getBookmarks not implemented", strict=False)
+    # getBookmarks / getLyrics / getInternetRadioStations are now implemented —
+    # they return a well-formed (empty) envelope even on an empty library.
+    # Behavioural coverage lives in TestLyrics / TestBookmarks / TestInternetRadio.
     def test_getBookmarks(self, client):
         body = _ok(_sub(client, "getBookmarks"))
         assert "bookmarks" in body
 
-    @pytest.mark.xfail(reason="getLyrics not implemented", strict=False)
     def test_getLyrics(self, client):
-        _ok(_sub(client, "getLyrics", artist="Whoever", title="Whatever"))
+        body = _ok(_sub(client, "getLyrics", artist="Whoever", title="Whatever"))
+        assert "lyrics" in body
 
-    @pytest.mark.xfail(
-        reason="getLyricsBySongId (OpenSubsonic) not implemented", strict=False
-    )
-    def test_getLyricsBySongId(self, client):
-        _ok(_sub(client, "getLyricsBySongId", id="tr-1"))
-
-    @pytest.mark.xfail(reason="getInternetRadioStations not implemented", strict=False)
     def test_getInternetRadioStations(self, client):
         body = _ok(_sub(client, "getInternetRadioStations"))
         assert "internetRadioStations" in body

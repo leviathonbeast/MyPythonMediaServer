@@ -109,21 +109,32 @@ objects include the extended fields (`mediaType`, `genres[]`,
 - Browsing: `getMusicFolders`, `getIndexes`, `getMusicDirectory`, `getArtists`, `getArtist`
 - Albums: `getAlbum`, `getAlbumList`, `getAlbumList2`, `getSong`, `getAlbumInfo`, `getAlbumInfo2`
 - Artists: `getArtistInfo`, `getArtistInfo2` (Last.fm bio + Deezer images)
-- Playback: `stream`, `download`, `getCoverArt` (with on-the-fly resize), `scrobble`
-- Search: `search3` (FTS5 on SQLite, `tsvector` on Postgres)
+- Genres: `getGenres`, `getSongsByGenre`
+- Playback: `stream`, `download`, `getCoverArt` (with on-the-fly resize), `scrobble`, `getNowPlaying`
+- Search: `search2`, `search3` (FTS5 on SQLite, `tsvector` on Postgres)
 - Starring: `star`, `unstar`, `getStarred`, `getStarred2`
+- Ratings: `setRating` (per-user 1–5; surfaced as `userRating`/`averageRating` on `getSong`/`getAlbum`/`getArtist`)
+- Lyrics: `getLyrics`, `getLyricsBySongId` — **time-synced (LRC) and plain**, sourced at scan time from a sidecar `<name>.lrc` (preferred) or embedded `USLT`/`©lyr`/Vorbis tags. LRC `[mm:ss.xx]` timestamps are returned as per-line `start` offsets; existing libraries need a **force re-scan** to backfill
+- Bookmarks: `getBookmarks`, `createBookmark`, `deleteBookmark` (per-user resume positions)
+- Internet radio: `getInternetRadioStations`, `createInternetRadioStation`, `updateInternetRadioStation`, `deleteInternetRadioStation`
+- Similar songs / radio: `getSimilarSongs`, `getSimilarSongs2`, plus the `sonicSimilarity` extension (`getSonicSimilarTracks`, `findSonicPath`) backed by librosa DSP fingerprints
+- Transcoding: `getTranscodeDecision` (`transcoding` extension — direct-play vs transcode from client capabilities)
 - Playlists: `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`
-- Play queue: `getPlayQueue`, `savePlayQueue` (cross-device sync)
+- Play queue: `getPlayQueue`, `savePlayQueue`, `getPlayQueueByIndex`, `savePlayQueueByIndex` (cross-device sync; `indexBasedQueue` extension)
 - Users: `getUser`, `getUsers`, `createUser`, `updateUser`, `deleteUser`, `changePassword`
 - Scan: `getScanStatus`, `startScan`
-- Random/top: `getRandomSongs`, `getTopSongs`
-- System: `ping`, `getLicense`, `getOpenSubsonicExtensions`
+- Random: `getRandomSongs`
+- System: `ping`, `getLicense`, `getOpenSubsonicExtensions`, `tokenInfo`
 
-**Stubbed** (returns valid empty responses so clients don't error):
-`getNowPlaying`
+**OpenSubsonic extensions advertised** (`getOpenSubsonicExtensions`):
+`formPost`, `indexBasedQueue`, `transcoding`, `sonicSimilarity`, `songLyrics`
 
-**Not yet implemented:**
-genres endpoint, similar-songs, podcasts, internet radio, bookmarks
+**Stubbed** (returns a valid empty response so clients don't error):
+`getTopSongs` (no last.fm play-rank source yet)
+
+**Not yet implemented** (deliberate gaps — clients degrade gracefully):
+`getAvatar`, sharing (`getShares` + create/update/delete), podcasts, jukebox,
+chat, video (`getVideos`/`hls`/`getCaptions`)
 
 ---
 

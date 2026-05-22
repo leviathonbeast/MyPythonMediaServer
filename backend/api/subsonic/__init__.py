@@ -15,6 +15,9 @@ from . import (
     album_info,
     sonic,
     similar,
+    lyrics,
+    bookmarks,
+    internet_radio,
 )
 
 

@@ -505,6 +505,50 @@ export async function getSimilarSongs2(
   return env.similarSongs2?.song ?? [];
 }
 
+// ---- Lyrics ---------------------------------------------------------------
+
+/** One lyric line. `time` is seconds into the song, or -1 for an untimed
+ * (plain-text) line. `text` may be empty (LRC instrumental breaks). */
+export interface LyricLine {
+  time: number;
+  text: string;
+}
+
+/** Normalised lyrics for a track. `synced` = the lines carry real timestamps
+ * (LRC) and can drive karaoke-style highlighting. */
+export interface SongLyrics {
+  synced: boolean;
+  lines: LyricLine[];
+}
+
+/**
+ * getLyricsBySongId (OpenSubsonic songLyrics extension). The server returns
+ * structuredLyrics with per-line millisecond `start` offsets when the track
+ * has LRC lyrics, or plain lines otherwise. We flatten the first block into
+ * the {synced, lines} shape both the track page and the player panel consume,
+ * converting `start` (ms) → `time` (seconds). Empty lines when there are none.
+ */
+export async function getLyricsBySongId(id: string): Promise<SongLyrics> {
+  const env = await subsonic<{
+    lyricsList?: {
+      structuredLyrics?: Array<{
+        synced?: boolean;
+        line?: Array<{ start?: number; value?: string }>;
+      }>;
+    };
+  }>("getLyricsBySongId", { id });
+
+  const block = env.lyricsList?.structuredLyrics?.[0];
+  if (!block?.line?.length) return { synced: false, lines: [] };
+
+  const synced = block.synced === true;
+  const lines: LyricLine[] = block.line.map((l) => ({
+    time: synced && typeof l.start === "number" ? l.start / 1000 : -1,
+    text: l.value ?? "",
+  }));
+  return { synced, lines };
+}
+
 export async function getStarred2(): Promise<{
   artist: SubsonicArtist[];
   album: SubsonicAlbum[];

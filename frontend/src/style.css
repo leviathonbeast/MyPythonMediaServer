@@ -492,6 +492,47 @@ a:hover { color: var(--accent); }
   color: var(--muted);
 }
 
+/* Lyrics panel — docks like the queue panel, sized for reading. The actual
+   line styling (.lyrics / .lyric-line / .active + the synced dimming) is the
+   shared rule set further down, so the panel and the track page look the same;
+   here we only set the panel chrome and a slightly tighter line size. */
+.player .lyrics-panel {
+  position: absolute;
+  right: var(--gap-4);
+  bottom: var(--player-h);
+  width: 460px;
+  max-width: calc(100vw - 2 * var(--gap-4));
+  max-height: 70vh;
+  background: var(--bg-2);
+  border: 1px solid var(--rule);
+  border-bottom: none;
+  display: flex;
+  flex-direction: column;
+  z-index: 11;
+}
+.player .lyrics-panel[hidden] { display: none; }
+.player .lyrics-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gap-3) var(--gap-4);
+}
+.player .lyrics-body .lyrics { max-width: none; margin: 0; }
+.player .lyrics-body .lyric-line {
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+/* Synced lines are click-to-seek; plain ones aren't interactive. */
+.player .lyrics-body .lyrics[data-synced="true"] .lyric-line { cursor: pointer; }
+.player .lyrics-empty {
+  padding: var(--gap-4);
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
 /* ─── 5. Components ──────────────────────────────────────────── */
 
 /* Generic content panel */

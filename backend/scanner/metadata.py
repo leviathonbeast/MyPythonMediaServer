@@ -26,8 +26,39 @@ from typing import Optional
 
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3NoHeaderError
+from mutagen.easyid3 import EasyID3
+from mutagen.easymp4 import EasyMP4Tags
 
 from backend.config import get_settings
+
+
+# ---------------------------------------------------------------------------
+# Teach mutagen's "easy" interface to surface unsynchronised lyrics.
+#
+# We read tags through MutagenFile(path, easy=True) — one open per file — but
+# the easy mapping omits lyrics for the two container formats that hide them in
+# non-text frames:
+#   - MP3 / ID3:  lyrics live in a USLT frame (one per language), not a plain
+#                 text frame, so EasyID3 doesn't expose them by default.
+#   - MP4 / m4a:  lyrics live in the "©lyr" atom, absent from EasyMP4's keys.
+# FLAC / OGG keep lyrics in a normal Vorbis comment ("LYRICS"/"UNSYNCEDLYRICS")
+# which the dict-like tags already expose, so they need no registration.
+#
+# Registering a read-only "lyrics" key here means _try_mutagen can just call
+# first("lyrics") uniformly across every format off the SAME easy open — no
+# second file read (which is what we deliberately avoid for embedded artwork).
+# ---------------------------------------------------------------------------
+def _easyid3_get_lyrics(id3, _key):
+    """EasyID3 getter: collect text from every USLT (lyrics) frame."""
+    return [frame.text for frame in id3.getall("USLT") if getattr(frame, "text", None)]
+
+
+# RegisterKey/RegisterTextKey just populate class-level dicts; re-running is
+# harmless, but guard anyway so a module reload can't trip on a duplicate.
+if "lyrics" not in EasyID3.Get:
+    EasyID3.RegisterKey("lyrics", getter=_easyid3_get_lyrics)
+if "lyrics" not in EasyMP4Tags.Get:
+    EasyMP4Tags.RegisterTextKey("lyrics", "\xa9lyr")
 
 
 @dataclass
@@ -54,6 +85,12 @@ class TrackMetadata:
     channels: Optional[int] = None
     sample_rate: Optional[int] = None   # Hz
     bit_depth: Optional[int] = None     # bits/sample (lossless only)
+    # Lyrics blob — plain text OR LRC (with [mm:ss.xx] timestamps). Sourced
+    # from a sidecar '<name>.lrc' when present (usually the synced copy), else
+    # embedded USLT (ID3) / ©lyr (MP4) / LYRICS|UNSYNCEDLYRICS (Vorbis). Stored
+    # verbatim; backend.core.lyrics parses sync vs plain at request time. None
+    # when the file carries no lyrics at all — most don't.
+    lyrics: Optional[str] = None
     # Picard / MusicBrainz primary release type — "album", "ep", "single",
     # "compilation", "live", "remix", "soundtrack", etc. We normalise to
     # lowercase and don't validate further; the artist page maps known
@@ -105,7 +142,38 @@ def extract(path: str, extract_art: bool = False) -> TrackMetadata:
         _try_ffprobe(path, meta)
     if meta.title == "Unknown":
         _try_filename(path, meta)
+    # Sidecar lyrics last so an external .lrc (usually the time-synced copy)
+    # wins over whatever was embedded in the tags.
+    _try_sidecar_lyrics(path, meta)
     return meta
+
+
+def _try_sidecar_lyrics(path: str, meta: TrackMetadata) -> None:
+    """Prefer an external '<name>.lrc' sidecar over embedded lyrics.
+
+    Sidecar .lrc files (dropped next to the audio by tools like LRCGET) are the
+    most common source of *time-synced* lyrics, and when one exists it's almost
+    always the better copy — so it overrides any embedded lyrics we already
+    read. The blob (LRC timestamps and all) is stored verbatim; parsing happens
+    at request time in backend.core.lyrics.
+
+    Cost is one stat per track (the existence check); the file is read only when
+    present. We check both '.lrc' and '.LRC' so case-sensitive filesystems
+    don't miss an upper-cased sidecar.
+    """
+    try:
+        p = Path(path)
+        for ext in (".lrc", ".LRC"):
+            sidecar = p.with_suffix(ext)
+            if sidecar.is_file():
+                # utf-8-sig drops a BOM if the .lrc was saved with one.
+                text = sidecar.read_text(encoding="utf-8-sig", errors="replace").strip()
+                if text:
+                    meta.lyrics = text
+                return
+    except Exception:
+        # Never let a lyrics sidecar break a scan — lyrics are best-effort.
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +237,9 @@ def _try_mutagen(path: str, meta: TrackMetadata, extract_art: bool = False) -> N
     mb_releasegroup = first("musicbrainz_releasegroupid")
     mb_artist = first("musicbrainz_artistid")
     mb_albumartist = first("musicbrainz_albumartistid")
+    # "lyrics" is registered above for MP3/MP4; "unsyncedlyrics" is an
+    # alternate Vorbis key some taggers (e.g. MusicBee) write.
+    lyrics = first("lyrics") or first("unsyncedlyrics")
 
     if title:        meta.title = title
     if artist:       meta.artist = artist
@@ -184,6 +255,7 @@ def _try_mutagen(path: str, meta: TrackMetadata, extract_art: bool = False) -> N
     if mb_releasegroup:  meta.musicbrainz_releasegroup_id = mb_releasegroup
     if mb_artist:        meta.musicbrainz_artist_id = mb_artist
     if mb_albumartist:   meta.musicbrainz_albumartist_id = mb_albumartist
+    if lyrics:           meta.lyrics = lyrics
 
     # Streaminfo is on the same object — no second open needed.
     info = getattr(mf, "info", None)
@@ -344,6 +416,8 @@ def _try_ffprobe(path: str, meta: TrackMetadata) -> None:
         meta.genre = tags["genre"]
     if meta.year is None and (tags.get("date") or tags.get("year")):
         meta.year = _parse_year(tags.get("date") or tags.get("year"))
+    if meta.lyrics is None and (tags.get("lyrics") or tags.get("unsyncedlyrics")):
+        meta.lyrics = tags.get("lyrics") or tags.get("unsyncedlyrics")
 
     if meta.duration is None:
         try:

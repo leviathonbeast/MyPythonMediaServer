@@ -1441,6 +1441,7 @@ def upsert_track(track: Dict[str, Any]) -> int:
     track.setdefault("channels", None)
     track.setdefault("sample_rate", None)
     track.setdefault("bit_depth", None)
+    track.setdefault("lyrics", None)
     row = (
         get_conn()
         .execute(
@@ -1448,13 +1449,13 @@ def upsert_track(track: Dict[str, Any]) -> int:
         INSERT INTO tracks (
             album_id, artist_id, music_folder_id, path, title,
             track_number, disc_number, duration, bitrate,
-            channels, sample_rate, bit_depth, size,
+            channels, sample_rate, bit_depth, lyrics, size,
             suffix, content_type, year, genre,
             mtime, content_hash, last_scanned, musicbrainz_id
         ) VALUES (
             :album_id, :artist_id, :music_folder_id, :path, :title,
             :track_number, :disc_number, :duration, :bitrate,
-            :channels, :sample_rate, :bit_depth, :size,
+            :channels, :sample_rate, :bit_depth, :lyrics, :size,
             :suffix, :content_type, :year, :genre,
             :mtime, :content_hash, :last_scanned, :musicbrainz_id
         )
@@ -1469,6 +1470,7 @@ def upsert_track(track: Dict[str, Any]) -> int:
             channels     = excluded.channels,
             sample_rate  = excluded.sample_rate,
             bit_depth    = excluded.bit_depth,
+            lyrics       = excluded.lyrics,
             size         = excluded.size,
             suffix       = excluded.suffix,
             content_type = excluded.content_type,
@@ -2058,3 +2060,260 @@ def library_stats() -> Dict[str, int]:
         "tracks": row["tracks"],
         "total_duration_seconds": int(row["total_duration_seconds"] or 0),
     }
+
+
+# ===========================================================================
+# Lyrics (getLyrics / getLyricsBySongId)
+# ===========================================================================
+#
+# Lyrics are stored on the track row (tracks.lyrics, migration 8), populated by
+# the scanner from embedded tags. get_track already returns the column via
+# SELECT t.* — these helpers cover the by-name lookup that the legacy getLyrics
+# endpoint needs (it searches by artist + title rather than id).
+
+
+def find_track_lyrics_by_name(artist: str, title: str) -> Optional[Dict[str, Any]]:
+    """Find a track by (artist, title) for the legacy getLyrics endpoint.
+
+    Case-insensitive match on both fields; returns the first hit with its
+    resolved artist name and lyrics text, or None. getLyrics has no id — it's
+    the pre-ID3 Subsonic endpoint that addresses a song by metadata — so this
+    is a best-effort lookup, not a guaranteed-unique one.
+    """
+    row = (
+        get_conn()
+        .execute(
+            """
+        SELECT t.title AS title, t.lyrics AS lyrics, ar.name AS artist_name
+          FROM tracks t
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+         WHERE t.title = :title COLLATE NOCASE
+           AND ar.name = :artist COLLATE NOCASE
+         LIMIT 1
+            """,
+            {"artist": artist, "title": title},
+        )
+        .fetchone()
+    )
+    return _row_to_dict(row)
+
+
+# ===========================================================================
+# Bookmarks (getBookmarks / createBookmark / deleteBookmark)
+# ===========================================================================
+
+
+def upsert_bookmark(
+    user_id: int, track_id: int, position: int, comment: Optional[str]
+) -> None:
+    """Save (or move) a user's playback bookmark for a track.
+
+    One row per (user, track): a repeat call updates the position/comment and
+    bumps `changed` rather than inserting a duplicate. `created` is preserved
+    across updates so the original bookmark time survives a reposition.
+    """
+    now = int(time.time())
+    get_conn().execute(
+        """
+        INSERT INTO bookmarks (user_id, track_id, position, comment, created, changed)
+        VALUES (:user_id, :track_id, :position, :comment, :now, :now)
+        ON CONFLICT (user_id, track_id) DO UPDATE SET
+            position = excluded.position,
+            comment  = excluded.comment,
+            changed  = excluded.changed
+        """,
+        {
+            "user_id": user_id,
+            "track_id": track_id,
+            "position": position,
+            "comment": comment,
+            "now": now,
+        },
+    )
+
+
+def list_bookmarks(user_id: int) -> List[Dict[str, Any]]:
+    """A user's bookmarks (most-recently-changed first).
+
+    Returns the raw bookmark rows; the endpoint hydrates each track_id into a
+    full song object via get_track. A user has at most a handful of bookmarks,
+    so the per-row fetch is cheaper than another wide join here.
+    """
+    rows = (
+        get_conn()
+        .execute(
+            """
+        SELECT track_id, position, comment, created, changed
+          FROM bookmarks
+         WHERE user_id = :user_id
+      ORDER BY changed DESC
+            """,
+            {"user_id": user_id},
+        )
+        .fetchall()
+    )
+    return _rows_to_dicts(rows)
+
+
+def delete_bookmark(user_id: int, track_id: int) -> None:
+    get_conn().execute(
+        "DELETE FROM bookmarks WHERE user_id = :user_id AND track_id = :track_id",
+        {"user_id": user_id, "track_id": track_id},
+    )
+
+
+# ===========================================================================
+# Internet radio stations (getInternetRadioStations + create/update/delete)
+# ===========================================================================
+#
+# Stations are server-wide, not per-user — that's the Subsonic model. Any
+# authenticated user can manage them (matching Navidrome/gonic), so there's no
+# owner column to filter on.
+
+
+def create_internet_radio(
+    name: str, stream_url: str, homepage_url: Optional[str]
+) -> int:
+    """Create a station; returns its new id (RETURNING — one round trip)."""
+    row = (
+        get_conn()
+        .execute(
+            """
+        INSERT INTO internet_radio_stations (name, stream_url, homepage_url, created)
+        VALUES (:name, :stream_url, :homepage_url, :created)
+        RETURNING id
+            """,
+            {
+                "name": name,
+                "stream_url": stream_url,
+                "homepage_url": homepage_url,
+                "created": int(time.time()),
+            },
+        )
+        .fetchone()
+    )
+    return int(row["id"])
+
+
+def list_internet_radio() -> List[Dict[str, Any]]:
+    """All stations, newest first."""
+    rows = (
+        get_conn()
+        .execute(
+            """
+        SELECT id, name, stream_url, homepage_url
+          FROM internet_radio_stations
+      ORDER BY id DESC
+            """
+        )
+        .fetchall()
+    )
+    return _rows_to_dicts(rows)
+
+
+def update_internet_radio(
+    station_id: int, name: str, stream_url: str, homepage_url: Optional[str]
+) -> bool:
+    """Update a station in place. Returns False if no such id (so the endpoint
+    can answer ERR_NOT_FOUND instead of silently succeeding)."""
+    cur = get_conn().execute(
+        """
+        UPDATE internet_radio_stations
+           SET name = :name, stream_url = :stream_url, homepage_url = :homepage_url
+         WHERE id = :id
+        """,
+        {
+            "id": station_id,
+            "name": name,
+            "stream_url": stream_url,
+            "homepage_url": homepage_url,
+        },
+    )
+    return cur.rowcount > 0
+
+
+def delete_internet_radio(station_id: int) -> bool:
+    """Delete a station. Returns False if no such id."""
+    cur = get_conn().execute(
+        "DELETE FROM internet_radio_stations WHERE id = :id",
+        {"id": station_id},
+    )
+    return cur.rowcount > 0
+
+
+# ===========================================================================
+# Ratings (setRating; surfaced as userRating/averageRating on detail endpoints)
+# ===========================================================================
+#
+# Polymorphic per-user ratings of tracks/albums/artists, mirroring the starred
+# table's (item_type, item_id) addressing. rating is always 1–5 in storage;
+# the "remove rating" case (setRating rating=0) maps to delete_rating.
+
+
+def set_rating(user_id: int, item_type: str, item_id: int, rating: int) -> None:
+    """Upsert a 1–5 rating for (user, item). Caller validates the 1–5 range and
+    routes rating=0 to delete_rating."""
+    get_conn().execute(
+        """
+        INSERT INTO ratings (user_id, item_type, item_id, rating, rated_at)
+        VALUES (:user_id, :item_type, :item_id, :rating, :rated_at)
+        ON CONFLICT (user_id, item_type, item_id) DO UPDATE SET
+            rating   = excluded.rating,
+            rated_at = excluded.rated_at
+        """,
+        {
+            "user_id": user_id,
+            "item_type": item_type,
+            "item_id": item_id,
+            "rating": rating,
+            "rated_at": int(time.time()),
+        },
+    )
+
+
+def delete_rating(user_id: int, item_type: str, item_id: int) -> None:
+    get_conn().execute(
+        """
+        DELETE FROM ratings
+         WHERE user_id = :user_id AND item_type = :item_type AND item_id = :item_id
+        """,
+        {"user_id": user_id, "item_type": item_type, "item_id": item_id},
+    )
+
+
+def get_user_rating(user_id: int, item_type: str, item_id: int) -> Optional[int]:
+    """This user's rating for the item, or None if unrated."""
+    row = (
+        get_conn()
+        .execute(
+            """
+        SELECT rating FROM ratings
+         WHERE user_id = :user_id AND item_type = :item_type AND item_id = :item_id
+            """,
+            {"user_id": user_id, "item_type": item_type, "item_id": item_id},
+        )
+        .fetchone()
+    )
+    return int(row["rating"]) if row is not None else None
+
+
+def get_average_rating(item_type: str, item_id: int) -> Optional[float]:
+    """Average rating across all users for the item, or None if unrated.
+
+    Rounded to 2 dp — the Subsonic averageRating field is a float and clients
+    render it as a partial-star bar, so we don't need full precision.
+    """
+    row = (
+        get_conn()
+        .execute(
+            """
+        SELECT AVG(rating) AS avg FROM ratings
+         WHERE item_type = :item_type AND item_id = :item_id
+            """,
+            {"item_type": item_type, "item_id": item_id},
+        )
+        .fetchone()
+    )
+    if row is None or row["avg"] is None:
+        return None
+    return round(float(row["avg"]), 2)

@@ -85,12 +85,33 @@ def get_open_subsonic_extensions(
         # by librosa DSP feature vectors. Implemented in api/subsonic/sonic.py;
         # vectors are populated by the /api/analyze pass.
         {"name": "sonicSimilarity", "versions": [1]},
+        # "songLyrics": adds getLyricsBySongId, returning structured (here:
+        # unsynced) lyrics for a track id. Implemented in api/subsonic/lyrics.py
+        # off the scanner-populated tracks.lyrics column.
+        {"name": "songLyrics", "versions": [1]},
     ]
 
     return responses.ok(
         {"openSubsonicExtensions": extensions},
         fmt=f,
         callback=callback,
+    )
+
+
+# ---- tokenInfo (OpenSubsonic) ---------------------------------------------
+@_double_register("tokenInfo")
+def token_info(ctx: SubsonicContext = Depends(subsonic_context)) -> Response:
+    """Return the username behind the presented credentials.
+
+    Part of the OpenSubsonic apiKeyAuthentication extension. We don't issue API
+    keys (so we don't advertise that extension), but the endpoint is harmless
+    and lets a client confirm which account a token resolves to — so we answer
+    for whatever auth the request used.
+    """
+    return responses.ok(
+        {"tokenInfo": {"username": ctx.username}},
+        fmt=ctx.fmt,
+        callback=ctx.callback,
     )
 
 

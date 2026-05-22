@@ -21,6 +21,7 @@ import {
   resolveStreamPlan, type TranscodingPolicy,
   getPlayQueueByIndex, savePlayQueueByIndex,
   getScrobbleThreshold,
+  getLyricsBySongId, type SongLyrics,
 } from "./api";
 
 // Debounce before firing the now-playing ping. Burning Last.fm's 5/sec
@@ -323,6 +324,11 @@ export const player = new Player();
 
 /* ---------- dock rendering ---------- */
 
+/** Minimal HTML-escape for text we inject via innerHTML (lyric lines). */
+function escapeText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Format `123` → `2:03`. Used in tracklists and the player. */
 export function fmtDuration(seconds: number | undefined | null): string {
   if (!seconds || !Number.isFinite(seconds)) return "—:—";
@@ -346,6 +352,13 @@ export function mountPlayerDock(host: HTMLElement): () => void {
       </div>
       <div class="queue-list" data-queue-list></div>
     </div>
+    <div class="lyrics-panel" data-lyrics-panel hidden>
+      <div class="queue-header">
+        <span class="queue-title">LYRICS</span>
+        <button data-lyrics-close title="Close">×</button>
+      </div>
+      <div class="lyrics-body" data-lyrics-body></div>
+    </div>
     <div class="now">
       <div class="art" data-art></div>
       <div class="meta">
@@ -360,6 +373,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
         <button class="play" data-play title="Play / pause">PLAY</button>
         <button data-next title="Next">NEXT ▶▶</button>
         <button data-queue title="Show queue">QUEUE</button>
+        <button data-lyrics title="Show lyrics">LYRICS</button>
       </div>
       <div class="scrub">
         <span class="time" data-cur>0:00</span>
@@ -386,6 +400,10 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   const elQueuePanel = $("[data-queue-panel]") as HTMLElement;
   const elQueueClose = $("[data-queue-close]") as HTMLButtonElement;
   const elQueueList = $("[data-queue-list]") as HTMLElement;
+  const elLyricsBtn = $("[data-lyrics]") as HTMLButtonElement;
+  const elLyricsPanel = $("[data-lyrics-panel]") as HTMLElement;
+  const elLyricsClose = $("[data-lyrics-close]") as HTMLButtonElement;
+  const elLyricsBody = $("[data-lyrics-body]") as HTMLElement;
   const elSeek = $("[data-seek]") as HTMLInputElement;
   const elCur = $("[data-cur]") as HTMLElement;
   const elDur = $("[data-dur]") as HTMLElement;
@@ -475,6 +493,99 @@ export function mountPlayerDock(host: HTMLElement): () => void {
     const idx = Number(row.dataset.idx);
     if (Number.isFinite(idx)) player.jumpTo(idx);
   });
+
+  // ---- Lyrics panel ----------------------------------------------------
+  // Shows lyrics for the current track and, for synced (LRC) lyrics,
+  // highlights + auto-scrolls the active line as playback advances. The
+  // per-tick cost is kept tiny: we fetch only when the track id changes and
+  // re-render only the active-line class when the active index changes — the
+  // heavy work (building the line elements) happens once per track.
+  let lyricsLoadedId: string | null = null;  // track id the panel is showing
+  let lyricsReqId = 0;                        // guards against stale async fetches
+  let lyricsSynced = false;
+  let lyricsLineEls: HTMLElement[] = [];      // line elements, in document order
+  let lyricsTimes: number[] = [];             // their start times (s), -1 = untimed
+  let lyricsActiveIdx = -1;
+
+  function setLyricsMessage(msg: string): void {
+    elLyricsBody.innerHTML = `<div class="lyrics-empty">${escapeText(msg)}</div>`;
+    lyricsLineEls = [];
+    lyricsTimes = [];
+    lyricsActiveIdx = -1;
+    lyricsSynced = false;
+  }
+
+  function renderLyrics(data: SongLyrics): void {
+    if (data.lines.length === 0) {
+      setLyricsMessage("No lyrics for this track");
+      return;
+    }
+    lyricsSynced = data.synced;
+    elLyricsBody.innerHTML = `
+      <div class="lyrics" data-synced="${data.synced}">
+        ${data.lines.map((l, i) => `
+          <div class="lyric-line" data-idx="${i}"
+               data-time="${l.time >= 0 ? l.time : ""}">${escapeText(l.text || " ")}</div>
+        `).join("")}
+      </div>`;
+    lyricsLineEls = Array.from(elLyricsBody.querySelectorAll<HTMLElement>(".lyric-line"));
+    lyricsTimes = lyricsLineEls.map((el) => (el.dataset.time ? Number(el.dataset.time) : -1));
+    lyricsActiveIdx = -1;
+  }
+
+  async function loadLyrics(track: SubsonicSong | null): Promise<void> {
+    lyricsLoadedId = track?.id ?? null;
+    if (!track) { setLyricsMessage("Nothing playing"); return; }
+    const req = ++lyricsReqId;
+    setLyricsMessage("Loading lyrics…");
+    try {
+      const data = await getLyricsBySongId(track.id);
+      if (req !== lyricsReqId) return;  // a newer track superseded this fetch
+      renderLyrics(data);
+      updateActiveLyric(player.snapshot().currentTime);
+    } catch {
+      if (req === lyricsReqId) setLyricsMessage("Couldn't load lyrics");
+    }
+  }
+
+  function updateActiveLyric(currentTime: number): void {
+    if (!lyricsSynced || lyricsTimes.length === 0) return;
+    // Last line whose timestamp we've reached.
+    let idx = -1;
+    for (let i = 0; i < lyricsTimes.length; i++) {
+      const t = lyricsTimes[i];
+      if (t < 0) continue;
+      if (t <= currentTime) idx = i;
+      else break;
+    }
+    if (idx === lyricsActiveIdx) return;
+    lyricsLineEls[lyricsActiveIdx]?.classList.remove("active");
+    lyricsActiveIdx = idx;
+    const el = lyricsLineEls[idx];
+    if (el) {
+      el.classList.add("active");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  elLyricsBtn.addEventListener("click", () => {
+    const opening = elLyricsPanel.hasAttribute("hidden");
+    if (opening) {
+      elLyricsPanel.removeAttribute("hidden");
+      const cur = player.snapshot().current;
+      if ((cur?.id ?? null) !== lyricsLoadedId) void loadLyrics(cur);
+    } else {
+      elLyricsPanel.setAttribute("hidden", "");
+    }
+  });
+  elLyricsClose.addEventListener("click", () => elLyricsPanel.setAttribute("hidden", ""));
+  // Click a synced line to jump playback there.
+  elLyricsBody.addEventListener("click", (e) => {
+    const line = (e.target as HTMLElement).closest<HTMLElement>(".lyric-line");
+    if (!line || !line.dataset.time) return;
+    const t = Number(line.dataset.time);
+    if (Number.isFinite(t) && t >= 0) player.seek(t);
+  });
   elSeek.addEventListener("input", () => {
     const snap = player.snapshot();
     if (snap.duration > 0) {
@@ -542,6 +653,16 @@ export function mountPlayerDock(host: HTMLElement): () => void {
       if (sig !== lastQueueSig) {
         lastQueueSig = sig;
         renderQueue(state);
+      }
+    }
+    // Lyrics panel: refetch when the track changes (while open), otherwise just
+    // advance the highlighted line. `?? null` so "nothing playing" compares
+    // equal to the initial state and doesn't refetch every tick.
+    if (!elLyricsPanel.hasAttribute("hidden")) {
+      if ((state.current?.id ?? null) !== lyricsLoadedId) {
+        void loadLyrics(state.current);
+      } else {
+        updateActiveLyric(state.currentTime);
       }
     }
   });

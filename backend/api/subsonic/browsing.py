@@ -109,6 +109,15 @@ def get_artist(
         "albumCount": len(albums),
     }
 
+    # Per-user + average ratings (setRating). Omitted when unrated so we never
+    # send a misleading 0-star value for a never-rated artist.
+    user_rating = queries.get_user_rating(ctx.user_id, "artist", internal_id)
+    if user_rating is not None:
+        artist_payload["userRating"] = user_rating
+    avg_rating = queries.get_average_rating("artist", internal_id)
+    if avg_rating is not None:
+        artist_payload["averageRating"] = avg_rating
+
     return responses.ok(
         {
             "artist": {

@@ -22,10 +22,12 @@ import {
   getSong,
   getArtistDetail,
   getSonicSimilarTracks,
+  getLyricsBySongId,
   coverArtUrl,
   type SubsonicAlbum,
   type SubsonicSong,
   type ArtistAlbum,
+  type SongLyrics,
 } from "../api";
 import { player, fmtDuration } from "../player";
 import { albumCardHtml } from "./albums";
@@ -42,17 +44,17 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
     // ask for artist detail. This is the one place we *can't* parallelize:
     // the artist call depends on data the song call returns.
     const song = await getSong(id);
-    song.lyrics = "[00:01.00] Hello world\n[00:03.00] This is a test\nNo timestamp here";  // TEMP
 
-    // The artist "More by" row and the "Sonic similar" row both depend only
-    // on the song we just fetched, so fire them in parallel. Each can fail
-    // (artist lookup error, or no feature vectors yet) without breaking the
-    // page — they just render nothing.
-    const [artistDetail, similar] = await Promise.all([
+    // The artist "More by" row, the "Sonic similar" row, and lyrics all depend
+    // only on the song we just fetched, so fire them in parallel. Each can fail
+    // (artist lookup error, no feature vectors yet, no lyrics) without breaking
+    // the page — they just render nothing.
+    const [artistDetail, similar, lyrics] = await Promise.all([
       song.artistId
         ? getArtistDetail(song.artistId).catch(() => null)
         : Promise.resolve(null),
       getSonicSimilarTracks(id, 12).catch(() => [] as SubsonicSong[]),
+      getLyricsBySongId(id).catch(() => ({ synced: false, lines: [] } as SongLyrics)),
     ]);
 
     // ---- Render --------------------------------------------------------
@@ -64,7 +66,7 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
       <div class="stagger">
         ${heroHtml(song)}
         ${fromAlbumHtml(song)}
-        ${lyricsHtml(song)}
+        ${lyricsHtml(lyrics)}
         ${sonicSimilarHtml(similar)}
         ${moreByArtistHtml(song, artistDetail)}
 
@@ -115,9 +117,67 @@ export async function renderTrack(host: HTMLElement, id: string): Promise<void> 
           if (Number.isFinite(idx)) player.playQueue(similar, idx);
         });
 
+    // ---- Karaoke sync: highlight the current line while THIS track plays ---
+    if (lyrics.synced) wireLyricSync(host, id);
+
   } catch (e) {
     host.innerHTML = `<div class="empty">Could not load track: ${escapeHtml((e as Error).message)}</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Karaoke sync (track page).
+//
+// Subscribes to the player and highlights the lyric line matching the current
+// playback position — but ONLY while the song being viewed is the one actually
+// playing. Viewing track A's page while track B plays leaves the lyrics as a
+// static (dimmed) page, which is the right behaviour.
+//
+// The player fires its subscriber ~4×/sec; we keep the per-tick work to an
+// integer compare + (only on change) a class toggle and a scroll, so it's
+// cheap. The unsubscribe is stashed on host.__cleanup so the router tears it
+// down when navigating away (see main.ts).
+// ---------------------------------------------------------------------------
+function wireLyricSync(host: HTMLElement, trackId: string): void {
+  const container = host.querySelector<HTMLElement>("[data-lyrics]");
+  if (!container) return;
+  const lineEls = Array.from(
+    container.querySelectorAll<HTMLElement>(".lyric-line[data-time]"),
+  ).filter((el) => el.dataset.time !== "");
+  const times = lineEls.map((el) => Number(el.dataset.time));
+  if (times.length === 0) return;
+
+  let activeIdx = -1;
+  const unsub = player.subscribe((state) => {
+    // Only follow when the playing track is the one on screen.
+    if (state.current?.id !== trackId) {
+      if (activeIdx !== -1) {
+        lineEls[activeIdx]?.classList.remove("active");
+        activeIdx = -1;
+      }
+      return;
+    }
+    // Last line whose timestamp we've passed.
+    let idx = -1;
+    for (let i = 0; i < times.length; i++) {
+      if (times[i] <= state.currentTime) idx = i;
+      else break;
+    }
+    if (idx === activeIdx) return;
+    lineEls[activeIdx]?.classList.remove("active");
+    activeIdx = idx;
+    const el = lineEls[idx];
+    if (el) {
+      el.classList.add("active");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  });
+
+  // Chain onto any cleanup already registered, then expose ours.
+  const prev = (host as any).__cleanup;
+  (host as any).__cleanup = () => {
+    try { if (typeof prev === "function") prev(); } finally { unsub(); }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,38 +292,21 @@ function fromAlbumHtml(song: SubsonicSong): string {
 // ---------------------------------------------------------------------------
 // Lyrics
 //
-// Renders the lyrics section if the track has any. Two formats supported:
+// Renders the lyrics the server resolved (getLyricsBySongId). The server is
+// the single LRC parser now (backend.core.lyrics): it returns either
+// timestamped lines (synced) or plain ones, already in playback order — we
+// just lay them out. `data-time` (seconds) on each line is what wireLyricSync
+// reads to drive karaoke highlighting; synced rendering also sets
+// data-synced="true", which the stylesheet uses to dim non-active lines.
 //
-//   1. Plain text — just the words, no timestamps. Render as paragraphs.
-//   2. LRC — synced format with timestamp markers like
-//        [00:29.06] Once upon a time...
-//      We parse the timestamps out and render the lines plain. The data
-//      is structured (LyricLine[] with `time` and `text`) so a future
-//      "highlight current line as the song plays" implementation only
-//      needs to: (a) subscribe to player.subscribe, (b) find the line
-//      where time <= currentTime < nextTime, (c) toggle a `.active`
-//      class. ~15 extra lines, no new deps.
-//
-// Until the scanner starts extracting lyrics tags, song.lyrics will be
-// undefined for everything and this section will be invisible. We render
-// nothing (empty string) in that case rather than a "no lyrics" empty
-// state — empty states for not-yet-implemented features feel like bugs.
+// Returns "" when there are no lyrics, so a track without them shows no
+// section at all rather than an empty "no lyrics" state.
 // ---------------------------------------------------------------------------
+function lyricsHtml(lyrics: SongLyrics): string {
+  const lines = lyrics.lines;
+  if (lines.length === 0) return "";  // no lyrics → no section
 
-interface LyricLine {
-  /** Seconds into the song this line starts. -1 for plain-text (untimed) lyrics. */
-  time: number;
-  text: string;
-}
-
-function lyricsHtml(song: SubsonicSong): string {
-  const raw = song.lyrics?.trim();
-  if (!raw) return "";  // no lyrics tagged → no section
-
-  const lines = parseLyrics(raw);
-  if (lines.length === 0) return "";
-
-  const synced = lines.some(l => l.time >= 0);
+  const synced = lyrics.synced;
 
   return `
     <section style="margin-top:var(--gap-12)">
@@ -280,89 +323,7 @@ function lyricsHtml(song: SubsonicSong): string {
         `).join("")}
       </div>
     </section>
-
-    <!--
-      Future karaoke-style sync hook:
-      When ready to implement, subscribe to the player here and toggle
-      .lyric-line.active on the row whose data-time matches the current
-      playback position. Pseudo-code:
-
-        const lines = host.querySelectorAll('.lyric-line[data-time]');
-        const times = [...lines].map(l => Number(l.dataset.time));
-        player.subscribe(state => {
-          const t = state.currentTime;
-          const idx = times.findLastIndex(time => time <= t);
-          lines.forEach((l, i) => l.classList.toggle('active', i === idx));
-          // optional: scroll the active line into view
-        });
-    -->
   `;
-}
-
-/**
- * Parse a lyrics blob into structured lines.
- *
- * Detects LRC format by the presence of `[mm:ss.xx]` timestamps at line
- * starts. If no timestamps are found, treats the input as plain text
- * (one LyricLine per non-empty line, all with time = -1).
- *
- * Tolerates LRC metadata lines like `[ar:Artist]`, `[ti:Title]`,
- * `[al:Album]`, `[length:02:27]` — these are skipped.
- *
- * Some LRC files use multiple timestamps for the same line (chorus
- * repeats). We expand those into separate entries so each repetition
- * highlights at the right time.
- */
-function parseLyrics(raw: string): LyricLine[] {
-  // Capture mm:ss(.xx)? at the start of a line, optionally repeated.
-  const TIMESTAMP_RE = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
-  // LRC metadata tags: [ar:..], [ti:..], [length:..], [offset:..], etc.
-  // These have an alpha key, not digits, so the timestamp regex skips
-  // them naturally — but we test the line for "is this content?" too.
-  const META_RE = /^\[[a-z]+:/i;
-
-  const out: LyricLine[] = [];
-  let sawAnyTimestamp = false;
-
-  for (const rawLine of raw.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (META_RE.test(line)) continue;  // skip LRC metadata
-
-    // Pull out all timestamps on this line.
-    const timestamps: number[] = [];
-    TIMESTAMP_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = TIMESTAMP_RE.exec(line)) !== null) {
-      const mins = Number(m[1]);
-      const secs = Number(m[2]);
-      const frac = m[3] ? Number(`0.${m[3]}`) : 0;
-      timestamps.push(mins * 60 + secs + frac);
-    }
-
-    // Strip timestamps from the text portion.
-    const text = line.replace(TIMESTAMP_RE, "").trim();
-
-    if (timestamps.length > 0) {
-      sawAnyTimestamp = true;
-      // Expand multi-timestamp lines into individual entries.
-      for (const t of timestamps) {
-        out.push({ time: t, text });
-      }
-    } else {
-      // No timestamp on this line — keep as untimed.
-      out.push({ time: -1, text });
-    }
-  }
-
-  // If we found at least one timestamp, the file is LRC; sort by time.
-  // Untimed lines (e.g. an "Instrumental" intro before the first stamped
-  // line) sort to the front and are rendered as static text.
-  if (sawAnyTimestamp) {
-    out.sort((a, b) => a.time - b.time);
-  }
-
-  return out;
 }
 
 

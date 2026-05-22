@@ -16,6 +16,27 @@ from .helpers import (
     subsonic_context,
 )
 
+
+def _attach_ratings(
+    payload: dict, user_id: int, item_type: str, item_id: Optional[int]
+) -> None:
+    """Add userRating / averageRating to a detail payload, in place.
+
+    Both are omitted (rather than sent as 0/null) when absent, matching how the
+    rest of our responses treat unknown values. Used by getSong and getAlbum;
+    getArtist does the equivalent inline. Shared here because albums.py already
+    owns the song + album detail handlers.
+    """
+    if item_id is None:
+        return
+    ur = queries.get_user_rating(user_id, item_type, item_id)
+    if ur is not None:
+        payload["userRating"] = ur
+    avg = queries.get_average_rating(item_type, item_id)
+    if avg is not None:
+        payload["averageRating"] = avg
+
+
 # ---- getAlbumList & getAlbumList2 -----------------------------------------
 
 
@@ -96,6 +117,8 @@ def get_album(
             fmt=ctx.fmt,
             callback=ctx.callback,
         )
+    _, rid = library.parse_id(id)
+    _attach_ratings(payload, ctx.user_id, "album", rid)
     return responses.ok({"album": payload}, fmt=ctx.fmt, callback=ctx.callback)
 
 
@@ -119,6 +142,7 @@ def get_song(
     _, rid = library.parse_id(id)
     plays = queries.get_playcount_by_user(ctx.user_id, rid)
     payload["playCount"] = plays
+    _attach_ratings(payload, ctx.user_id, "track", rid)
     return responses.ok({"song": payload}, fmt=ctx.fmt, callback=ctx.callback)
 
 
