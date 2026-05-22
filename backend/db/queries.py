@@ -1020,6 +1020,50 @@ def list_artist_appearances(artist_id: int) -> List[Dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_artist_tracks(artist_id: int) -> List[Dict[str, Any]]:
+    """Every track credited to this artist (track-level), in track_to_subsonic shape.
+
+    Unlike `list_artist_appearances` this applies NO album-artist exclusion — it
+    returns the artist's whole catalogue (their own albums *and* guest spots),
+    so a caller can pick a uniform random seed across all their songs. Used by
+    getSimilarSongs2 (artist radio): seeding from a flat track pool is unbiased,
+    whereas the frontend's old "random album → random track" over-weights
+    artists with many small albums.
+
+    Same SELECT/joins as `list_artist_appearances` (so the rows slot straight
+    into `track_to_subsonic`), just `WHERE t.artist_id = :artist_id` with no
+    `albums.artist_id != :artist_id` filter.
+    """
+    rows = (
+        get_conn()
+        .execute(
+            """
+        SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.bitrate,
+               t.channels, t.sample_rate, t.bit_depth,
+               t.size, t.suffix, t.content_type, t.year, t.genre, t.path,
+               t.musicbrainz_id,
+               t.artist_id, ar.name AS artist_name,
+               t.album_id, al.name AS album_name, al.cover_art_id,
+               al.year AS album_year,
+               al.artist_id AS album_artist_id,
+               aa.name AS album_artist_name
+          FROM tracks  t
+          JOIN albums  al ON al.id = t.album_id
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN artists aa ON aa.id = al.artist_id
+         WHERE t.artist_id = :artist_id
+      ORDER BY COALESCE(al.year, 0) DESC,
+               al.name COLLATE NOCASE,
+               t.disc_number,
+               t.track_number
+            """,
+            {"artist_id": artist_id},
+        )
+        .fetchall()
+    )
+    return _rows_to_dicts(rows)
+
+
 def list_artist_albums(artist_id: int) -> List[Dict[str, Any]]:
     """All albums by an artist, ordered by year then name."""
     rows = (

@@ -16,7 +16,7 @@
 //     Albums, EPs, Singles, Compilations, Other.
 
 import {
-  getArtistDetail, getAlbum, getSonicSimilarTracks, coverArtUrl,
+  getArtistDetail, getSimilarSongs2, coverArtUrl,
   type ArtistAlbum, type SubsonicSong,
 } from "../api";
 import { albumCardHtml } from "./albums";
@@ -75,7 +75,7 @@ export async function renderArtist(host: HTMLElement, id: string): Promise<void>
     `;
 
     if (appearances.length > 0) wireAppearanceClicks(host, appearances);
-    wireArtistRadio(host, grouped);
+    wireArtistRadio(host, id);
   } catch (e) {
     host.innerHTML = `<div class="empty">Could not load artist: ${escapeHtml((e as Error).message)}</div>`;
   }
@@ -84,40 +84,28 @@ export async function renderArtist(host: HTMLElement, id: string): Promise<void>
 // ---------------------------------------------------------------------------
 // Artist radio — a sonic-similarity queue seeded by the artist's own music.
 //
-// We pick a random track from a random album in the catalog (so the radio
-// varies per click and isn't anchored to one song), then queue that seed
-// followed by its sonic neighbours from getSonicSimilarTracks. Empty result =
-// the library hasn't been analysed yet, so we point at Settings.
+// The server-side getSimilarSongs2 endpoint does the work now: given the artist
+// id it picks a random seed track from the artist's catalogue and returns it
+// followed by its sonic neighbours. That collapses what used to be two client
+// round-trips (random album → random track → getSonicSimilarTracks) into one,
+// and lets the seed vary per click server-side. Empty result = the library
+// hasn't been analysed yet, so we point at Settings.
 // ---------------------------------------------------------------------------
-function allAlbumsFromGrouped(g: ArtistDetailGrouped): ArtistAlbum[] {
-  return [...g.albums, ...g.eps, ...g.singles, ...g.compilations, ...g.other];
-}
-
-function wireArtistRadio(host: HTMLElement, grouped: ArtistDetailGrouped): void {
+function wireArtistRadio(host: HTMLElement, id: string): void {
   const btn = host.querySelector<HTMLButtonElement>("[data-artist-radio]");
   if (!btn) return;
   const label = btn.textContent ?? "≈ Artist radio";
 
   btn.addEventListener("click", async () => {
-    const albums = allAlbumsFromGrouped(grouped);
-    if (albums.length === 0) return;
-
     btn.disabled = true;
     btn.textContent = "Loading…";
     try {
-      const album = albums[Math.floor(Math.random() * albums.length)];
-      const songs = (await getAlbum(album.id)).album.song ?? [];
+      const songs = await getSimilarSongs2(id, 24);
       if (songs.length === 0) {
-        window.alert("Couldn't start radio — no tracks found for this artist.");
-        return;
-      }
-      const seed = songs[Math.floor(Math.random() * songs.length)];
-      const similar = await getSonicSimilarTracks(String(seed.id), 24);
-      if (similar.length === 0) {
         window.alert("No sonic data for this artist yet — run Sonic analysis in Settings.");
         return;
       }
-      player.playQueue([seed, ...similar], 0);
+      player.playQueue(songs, 0);
     } catch (e) {
       window.alert((e as Error).message);
     } finally {

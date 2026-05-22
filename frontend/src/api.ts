@@ -474,6 +474,37 @@ export async function getSonicSimilarTracks(
   return (env.sonicMatch ?? []).map(m => m.entry);
 }
 
+/**
+ * Core Subsonic getSimilarSongs — an "artist radio" seeded from `id` (an artist,
+ * album, or song id). The server picks a seed track and returns it followed by
+ * its sonic neighbours. Empty when the seed has no feature vector yet (run the
+ * analysis pass from Settings).
+ *
+ * Unlike getSonicSimilarTracks (flat sonicMatch), this is the standard nested
+ * `similarSongs: { song: [...] }` envelope, so we unwrap to the song array.
+ */
+export async function getSimilarSongs(
+  id: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
+  const env = await subsonic<{ similarSongs?: { song?: SubsonicSong[] } }>(
+    "getSimilarSongs", { id, count });
+  return env.similarSongs?.song ?? [];
+}
+
+/**
+ * getSimilarSongs2 — the ID3 form of getSimilarSongs. `id` is always an artist
+ * id. Same seed-and-neighbours behaviour; the response key is `similarSongs2`.
+ */
+export async function getSimilarSongs2(
+  id: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
+  const env = await subsonic<{ similarSongs2?: { song?: SubsonicSong[] } }>(
+    "getSimilarSongs2", { id, count });
+  return env.similarSongs2?.song ?? [];
+}
+
 export async function getStarred2(): Promise<{
   artist: SubsonicArtist[];
   album: SubsonicAlbum[];

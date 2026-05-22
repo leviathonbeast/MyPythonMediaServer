@@ -496,6 +496,51 @@ class TestSonicSimilarity:
 
 
 # ===========================================================================
+# 7d. getSimilarSongs + getSimilarSongs2 (core Subsonic "artist radio")
+# ===========================================================================
+
+
+class TestSimilarSongs:
+    def test_song_seed_returns_seed_then_neighbours(self, client):
+        # Track 0 sits next to track 1; track 2 is far away.
+        ids = _seed_tracks_with_features(3, [[0.0, 0.0], [0.1, 0.0], [9.0, 9.0]])
+        body = _ok(_sub(client, "getSimilarSongs", id=f"tr-{ids[0]}", count=5))
+        songs = body["similarSongs"]["song"]
+        assert songs, "expected a non-empty song list"
+        assert songs[0]["id"] == f"tr-{ids[0]}"   # seed prepended first
+        assert songs[1]["id"] == f"tr-{ids[1]}"   # nearest neighbour next
+        assert len(songs) <= 5
+
+    def test_artist_seed_id3_form(self, client):
+        # getSimilarSongs2 takes an artist id and seeds from a random track of theirs.
+        ids = _seed_tracks_with_features(3, [[0.0, 0.0], [0.1, 0.0], [9.0, 9.0]])
+        artist_id = queries.get_track(ids[0])["artist_id"]
+        body = _ok(_sub(client, "getSimilarSongs2", id=f"ar-{artist_id}", count=10))
+        songs = body["similarSongs2"]["song"]
+        assert songs, "analysed artist should yield a radio queue"
+        assert all(s["id"].startswith("tr-") for s in songs)
+
+    def test_empty_when_no_features(self, client, seeded_library):
+        # Seeded track/artist have no feature vectors → empty list, ok envelope.
+        body = _ok(_sub(client, "getSimilarSongs", id=seeded_library["track_prefix"]))
+        assert body["similarSongs"]["song"] == []
+        body2 = _ok(_sub(client, "getSimilarSongs2", id=seeded_library["artist_prefix"]))
+        assert body2["similarSongs2"]["song"] == []
+
+    def test_unknown_id_errors(self, client):
+        _err(_sub(client, "getSimilarSongs", id="tr-999999"), code=70)
+        _err(_sub(client, "getSimilarSongs2", id="ar-999999"), code=70)
+        _err(_sub(client, "getSimilarSongs2", id="not-an-id"), code=70)
+
+    def test_count_cap(self, client):
+        ids = _seed_tracks_with_features(5, [[float(i), 0.0] for i in range(5)])
+        body = _ok(_sub(client, "getSimilarSongs", id=f"tr-{ids[0]}", count=2))
+        songs = body["similarSongs"]["song"]
+        assert len(songs) <= 2
+        assert songs[0]["id"] == f"tr-{ids[0]}"   # seed always first
+
+
+# ===========================================================================
 # 8. Playlists
 # ===========================================================================
 

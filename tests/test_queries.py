@@ -256,6 +256,59 @@ class TestListArtistsIndexed:
 
 
 # ===========================================================================
+# list_artist_tracks (flat seed pool for getSimilarSongs2)
+# ===========================================================================
+
+
+class TestListArtistTracks:
+    def test_returns_all_tracks_across_albums(self, client):
+        """Every track credited to the artist, regardless of which album it's on."""
+        with transaction():
+            folder = queries.add_music_folder(name="lat", path="/lat-folder")
+            artist = queries.upsert_artist("LAT Artist")
+            a1 = queries.upsert_album(artist_id=artist, name="LP One", year=2020)
+            a2 = queries.upsert_album(artist_id=artist, name="LP Two", year=2024)
+            queries.upsert_track(_track_row(
+                path="/lat-folder/1.mp3", title="One",
+                artist_id=artist, album_id=a1, music_folder_id=folder,
+            ))
+            queries.upsert_track(_track_row(
+                path="/lat-folder/2.mp3", title="Two",
+                artist_id=artist, album_id=a2, music_folder_id=folder,
+            ))
+            queries.upsert_track(_track_row(
+                path="/lat-folder/3.mp3", title="Three",
+                artist_id=artist, album_id=a2, music_folder_id=folder,
+            ))
+        rows = queries.list_artist_tracks(artist)
+        assert len(rows) == 3
+        assert {r["title"] for r in rows} == {"One", "Two", "Three"}
+        # Shape must slot into track_to_subsonic — artist_name is joined in.
+        assert all(r["artist_name"] == "LAT Artist" for r in rows)
+
+    def test_excludes_other_artists_tracks(self, client):
+        """WHERE t.artist_id = :id must not leak another artist's songs."""
+        with transaction():
+            folder = queries.add_music_folder(name="lat2", path="/lat2-folder")
+            mine = queries.upsert_artist("Mine")
+            other = queries.upsert_artist("Other")
+            album = queries.upsert_album(artist_id=mine, name="Comp", year=2024)
+            queries.upsert_track(_track_row(
+                path="/lat2-folder/mine.mp3", title="Mine Song",
+                artist_id=mine, album_id=album, music_folder_id=folder,
+            ))
+            queries.upsert_track(_track_row(
+                path="/lat2-folder/other.mp3", title="Other Song",
+                artist_id=other, album_id=album, music_folder_id=folder,
+            ))
+        titles = {r["title"] for r in queries.list_artist_tracks(mine)}
+        assert titles == {"Mine Song"}
+
+    def test_empty_for_unknown_artist(self, client):
+        assert queries.list_artist_tracks(999_999) == []
+
+
+# ===========================================================================
 # Extended track stream properties (channels / sample_rate / bit_depth)
 # ===========================================================================
 

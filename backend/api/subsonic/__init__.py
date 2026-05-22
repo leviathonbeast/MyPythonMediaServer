@@ -14,6 +14,7 @@ from . import (
     artist_info,
     album_info,
     sonic,
+    similar,
 )
 
 
