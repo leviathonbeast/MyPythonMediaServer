@@ -131,6 +131,11 @@ CREATE INDEX IF NOT EXISTS idx_tracks_year    ON tracks(year);
 -- and the index is roughly half the size.
 CREATE INDEX IF NOT EXISTS idx_tracks_genre
     ON tracks(genre COLLATE NOCASE) WHERE genre IS NOT NULL;
+-- Recording MBID lookup — used when importing external playlists
+-- (ListenBrainz) where each track is matched by its MusicBrainz id first.
+-- Partial for the same reason as the genre index: skip the NULLs.
+CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_id
+    ON tracks(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- users

@@ -1026,6 +1026,66 @@ export async function lastfmDisconnect(): Promise<void> {
 }
 
 
+/* ---------- ListenBrainz per-user linking ---------- */
+//
+// No OAuth dance here (unlike Last.fm): the user pastes a personal token
+// from https://listenbrainz.org/settings/, we validate it server-side, and
+// store it. The same token then drives scrobbling and playlist import.
+
+export interface ListenBrainzStatus {
+  linked: boolean;
+  username?: string;
+}
+
+// One of the recommendation playlists ListenBrainz generates for the user
+// (Weekly Jams, Weekly Exploration, Daily Jams, …).
+export interface ListenBrainzPlaylist {
+  mbid: string;
+  title: string;
+  description: string;
+  track_count: number | null;
+}
+
+// Result of importing one playlist: how many of its tracks we could match
+// to the local library, plus the labels we couldn't find.
+export interface ListenBrainzImportResult {
+  playlist_id: number;
+  name: string;
+  matched: number;
+  total: number;
+  unmatched: string[];
+}
+
+export async function getListenBrainzStatus(): Promise<ListenBrainzStatus> {
+  return apiGet<ListenBrainzStatus>("/api/me/listenbrainz");
+}
+
+export async function listenBrainzConnect(token: string): Promise<ListenBrainzStatus> {
+  return apiPost<ListenBrainzStatus>("/api/me/listenbrainz/connect", { token });
+}
+
+export async function listenBrainzDisconnect(): Promise<void> {
+  await apiDelete<unknown>("/api/me/listenbrainz");
+}
+
+export async function getListenBrainzPlaylists(): Promise<ListenBrainzPlaylist[]> {
+  const res = await apiGet<{ playlists: ListenBrainzPlaylist[] }>(
+    "/api/me/listenbrainz/playlists",
+  );
+  return res.playlists;
+}
+
+export async function importListenBrainzPlaylist(
+  playlist_mbid: string,
+  name?: string,
+): Promise<ListenBrainzImportResult> {
+  return apiPost<ListenBrainzImportResult>(
+    "/api/me/listenbrainz/playlists/import",
+    { playlist_mbid, name },
+  );
+}
+
+
 /* ---------- User management ---------- */
 
 export interface MeInfo {

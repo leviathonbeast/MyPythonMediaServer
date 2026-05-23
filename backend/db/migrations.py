@@ -252,6 +252,21 @@ def _migration_011_add_ratings(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_012_index_track_musicbrainz_id(conn: sqlite3.Connection) -> None:
+    """Index tracks.musicbrainz_id (recording MBID).
+
+    Added for external-playlist import (ListenBrainz "created for you"
+    playlists): each imported track is resolved by recording MBID first, so
+    that lookup runs once per track and would otherwise full-scan the table.
+    Partial index (WHERE musicbrainz_id IS NOT NULL) — most rows have an MBID
+    but the NULLs are dead weight in the index, so we skip them. Mirrors the
+    partial-index pattern already used for tracks.genre in schema.sql."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_id "
+        "ON tracks(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL"
+    )
+
+
 # Order matters. Append new migrations; never reorder existing ones.
 # Future schema changes start at version 4.
 MIGRATIONS: List[Migration] = [
@@ -266,6 +281,7 @@ MIGRATIONS: List[Migration] = [
     (9, _migration_009_add_bookmarks),
     (10, _migration_010_add_internet_radio),
     (11, _migration_011_add_ratings),
+    (12, _migration_012_index_track_musicbrainz_id),
 ]
 
 

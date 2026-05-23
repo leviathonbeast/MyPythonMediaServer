@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from backend.core import auth as auth_core
 from backend.core import deezer
 from backend.core import lastfm
+from backend.core import listenbrainz
 from backend.core import library as library_core
 from backend.core.sonic_analysis import (
     start_analyze_async,
@@ -246,6 +247,159 @@ def lastfm_disconnect(user: dict = Depends(jwt_user)):
             int(user["sub"]), queries.SERVICE_LASTFM
         )
     return {"linked": False, "was_linked": was_linked}
+
+
+# LISTENBRAINZ STUFF
+#
+# Unlike Last.fm (OAuth-ish token dance + server-wide api_key/secret),
+# ListenBrainz auth is a single per-user token the user pastes from
+# https://listenbrainz.org/settings/. We validate it on link, store it in
+# the same user_external_accounts table (service="listenbrainz"), and reuse
+# it for scrobbling and playlist import.
+
+
+class ListenBrainzConnectRequest(BaseModel):
+    token: str
+
+
+class ListenBrainzImportRequest(BaseModel):
+    playlist_mbid: str
+    # Optional override for the local playlist name; defaults to the
+    # ListenBrainz playlist's own title.
+    name: Optional[str] = None
+
+
+@router.get("/me/listenbrainz")
+def listenbrainz_status(user: dict = Depends(jwt_user)):
+    """Return whether the current user has ListenBrainz linked, and as whom."""
+    acct = queries.get_external_account(int(user["sub"]), queries.SERVICE_LISTENBRAINZ)
+    if acct is None:
+        return {"linked": False}
+    return {"linked": True, "username": acct.get("username")}
+
+
+@router.post("/me/listenbrainz/connect")
+def listenbrainz_connect(
+    body: ListenBrainzConnectRequest, user: dict = Depends(jwt_user)
+):
+    """Link a ListenBrainz account by validating and storing its user token.
+
+    There's no redirect handshake — we confirm the token with ListenBrainz's
+    validate-token endpoint (which also tells us the username) and persist it.
+    A bad token fails here rather than silently dropping future scrobbles.
+    """
+    try:
+        username = listenbrainz.validate_token(body.token)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    with transaction():
+        queries.set_external_account(
+            int(user["sub"]),
+            queries.SERVICE_LISTENBRAINZ,
+            auth_token=body.token.strip(),
+            username=username,
+        )
+    return {"linked": True, "username": username}
+
+
+@router.delete("/me/listenbrainz")
+def listenbrainz_disconnect(user: dict = Depends(jwt_user)):
+    """Forget the user's ListenBrainz token. The token itself stays valid on
+    ListenBrainz; the user can regenerate it there to fully revoke access."""
+    with transaction():
+        was_linked = queries.delete_external_account(
+            int(user["sub"]), queries.SERVICE_LISTENBRAINZ
+        )
+    return {"linked": False, "was_linked": was_linked}
+
+
+@router.get("/me/listenbrainz/playlists")
+def listenbrainz_playlists(user: dict = Depends(jwt_user)):
+    """List the recommendation playlists ListenBrainz generated for the user.
+
+    These are the "created for you" playlists (Weekly Jams, Weekly
+    Exploration, Daily Jams, …) — the things the importer can pull in.
+    """
+    acct = queries.get_external_account(int(user["sub"]), queries.SERVICE_LISTENBRAINZ)
+    if acct is None:
+        raise HTTPException(status_code=400, detail="ListenBrainz is not linked")
+    try:
+        playlists = listenbrainz.get_created_for_playlists(
+            acct["auth_token"], acct["username"]
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"playlists": [p.as_dict() for p in playlists]}
+
+
+@router.post("/me/listenbrainz/playlists/import")
+def listenbrainz_import_playlist(
+    body: ListenBrainzImportRequest, user: dict = Depends(jwt_user)
+):
+    """Import one ListenBrainz playlist into a new local playlist.
+
+    Fetches the playlist's JSPF body, resolves each track to a local track id
+    (recording MBID first, then case-insensitive artist+title), and creates a
+    playlist owned by the caller from the tracks we matched. Returns how many
+    matched plus the titles we couldn't find, so the UI can be honest about
+    coverage — a partial import is the norm, not an error.
+    """
+    user_id = int(user["sub"])
+    acct = queries.get_external_account(user_id, queries.SERVICE_LISTENBRAINZ)
+    if acct is None:
+        raise HTTPException(status_code=400, detail="ListenBrainz is not linked")
+
+    try:
+        playlist = listenbrainz.fetch_playlist(acct["auth_token"], body.playlist_mbid)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    remote_tracks = listenbrainz.parse_jspf_tracks(playlist)
+    if not remote_tracks:
+        raise HTTPException(
+            status_code=422, detail="That ListenBrainz playlist has no tracks"
+        )
+
+    # Resolve to local ids, preserving order and de-duplicating: the same
+    # local track matching two playlist entries would otherwise appear twice.
+    matched_ids: list[int] = []
+    seen: set[int] = set()
+    unmatched: list[str] = []
+    for rt in remote_tracks:
+        tid = None
+        if rt.recording_mbid:
+            tid = queries.find_track_id_by_musicbrainz_id(rt.recording_mbid)
+        if tid is None:
+            tid = queries.find_track_id_by_artist_and_title(rt.artist, rt.title)
+        if tid is None:
+            label = f"{rt.artist} — {rt.title}".strip(" —") or rt.title or rt.recording_mbid
+            unmatched.append(label)
+            continue
+        if tid not in seen:
+            seen.add(tid)
+            matched_ids.append(tid)
+
+    if not matched_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "None of this playlist's tracks are in your library "
+                f"({len(remote_tracks)} tracks checked)"
+            ),
+        )
+
+    name = (body.name or "").strip() or playlist.get("title") or "ListenBrainz playlist"
+    with transaction():
+        playlist_id = queries.create_playlist(name, user_id, matched_ids)
+
+    return {
+        "playlist_id": playlist_id,
+        "name": name,
+        "matched": len(matched_ids),
+        "total": len(remote_tracks),
+        "unmatched": unmatched,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -131,9 +131,9 @@ export async function renderLastfmSection(host: HTMLElement): Promise<LastfmSect
         </select>
       </label>
       <div style="font-family:var(--font-mono);font-size:var(--t-micro);color:var(--muted);margin-top:.5rem">
-        Affects local play counts and Last.fm scrobbles. Now-playing pings
-        always fire shortly after a track starts (cosmetic placeholder on
-        Last.fm; not a permanent scrobble).
+        Affects local play counts and Last.fm / ListenBrainz scrobbles.
+        Now-playing pings always fire shortly after a track starts (cosmetic
+        placeholder on those services; not a permanent scrobble).
       </div>
     `;
   };

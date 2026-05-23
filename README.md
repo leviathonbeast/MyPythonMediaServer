@@ -29,7 +29,7 @@ Key env vars in `docker-compose.yml`:
 | `MUSE_ADMIN_PASSWORD` | Initial admin password (first-run only) |
 | `MUSE_MUSIC_FOLDERS` | JSON array if you have more than one root |
 | `MUSE_DATABASE_URL` | Optional — `sqlite:///...` or `postgresql://user:pass@host/db`. Default is SQLite. |
-| `MUSE_LASTFM_API_KEY` | Optional — enables artist bios & photos |
+| `MUSE_LASTFM_API_KEY` | Optional — enables artist bios & photos, and Last.fm scrobbling |
 | `MUSE_MAX_STREAMING_BITRATE` | Optional — server-wide kbps cap |
 | `MUSE_AUTH_RATE_LIMITS` | Login rate limit (default: `5/minute`) |
 
@@ -82,10 +82,14 @@ bitrate cap; transcoding kill-switch for LAN-only installs.
 
 **Playlists** — create, update and delete playlists; add and remove
 tracks; public and private playlists; cross-client compatible via
-Subsonic protocol.
+Subsonic protocol. Import ListenBrainz's generated recommendation
+playlists (Weekly Jams, Weekly Exploration, …), matched against your
+library by recording MBID and then artist/title.
 
-**Play counts** — scrobble tracking per user; play count shown on track
-detail pages; `frequent` and `recent` sort modes (in progress).
+**Play counts & scrobbling** — per-user play tracking shown on track
+detail pages; `frequent` and `recent` sort modes (in progress). Optional
+per-user scrobbling to **Last.fm** and **ListenBrainz** (now-playing +
+permanent listens), gated by a configurable play threshold.
 
 **Web UI** — A–Z artist library, paginated albums, full-text search,
 artist pages with Last.fm bios, persistent player dock with queue and

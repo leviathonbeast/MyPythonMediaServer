@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 import time as _time
 from backend.core import lastfm
+from backend.core import listenbrainz
 
 from .helpers import (
     _double_register,
@@ -155,9 +156,14 @@ def scrobble(
             for rid in resolved:
                 queries.play_count(ctx.user_id, rid)
 
-    acct = queries.get_external_account(ctx.user_id, queries.SERVICE_LASTFM)
-    if acct is not None and background_tasks is not None:
-        session_key = acct["auth_token"]
+    # Dispatch to every linked scrobbling service. Both Last.fm and
+    # ListenBrainz take the same per-track facts (artist/title/album/MBID);
+    # only the call shape and the stored credential differ. We fetch each
+    # track once and fan it out to whichever services the user has linked.
+    lastfm_acct = queries.get_external_account(ctx.user_id, queries.SERVICE_LASTFM)
+    lb_acct = queries.get_external_account(ctx.user_id, queries.SERVICE_LISTENBRAINZ)
+
+    if (lastfm_acct is not None or lb_acct is not None) and background_tasks is not None:
         if submission:
             for i, rid in enumerate(resolved):
                 track = queries.get_track(rid)
@@ -166,27 +172,54 @@ def scrobble(
                 ts = (
                     (time[i] // 1000) if (time and i < len(time)) else int(_time.time())
                 )
-                background_tasks.add_task(
-                    lastfm.scrobble_track,
-                    session_key,
-                    artist=track.get("artist_name") or "",
-                    title=track["title"],
-                    album=track.get("album_name"),
-                    mbid=track.get("musicbrainz_id"),
-                    timestamp=ts,
-                )
+                artist = track.get("artist_name") or ""
+                album = track.get("album_name")
+                mbid = track.get("musicbrainz_id")
+                if lastfm_acct is not None:
+                    background_tasks.add_task(
+                        lastfm.scrobble_track,
+                        lastfm_acct["auth_token"],
+                        artist=artist,
+                        title=track["title"],
+                        album=album,
+                        mbid=mbid,
+                        timestamp=ts,
+                    )
+                if lb_acct is not None:
+                    background_tasks.add_task(
+                        listenbrainz.submit_listen,
+                        lb_acct["auth_token"],
+                        artist=artist,
+                        title=track["title"],
+                        album=album,
+                        recording_mbid=mbid,
+                        listened_at=ts,
+                    )
         elif resolved:
             now_playing.record(ctx.user_id, resolved[0], ctx.client)
             track = queries.get_track(resolved[0])
             if track is not None:
-                background_tasks.add_task(
-                    lastfm.update_now_playing,
-                    session_key,
-                    artist=track.get("artist_name") or "",
-                    title=track["title"],
-                    album=track.get("album_name"),
-                    mbid=track.get("musicbrainz_id"),
-                )
+                artist = track.get("artist_name") or ""
+                album = track.get("album_name")
+                mbid = track.get("musicbrainz_id")
+                if lastfm_acct is not None:
+                    background_tasks.add_task(
+                        lastfm.update_now_playing,
+                        lastfm_acct["auth_token"],
+                        artist=artist,
+                        title=track["title"],
+                        album=album,
+                        mbid=mbid,
+                    )
+                if lb_acct is not None:
+                    background_tasks.add_task(
+                        listenbrainz.update_now_playing,
+                        lb_acct["auth_token"],
+                        artist=artist,
+                        title=track["title"],
+                        album=album,
+                        recording_mbid=mbid,
+                    )
     return responses.ok(fmt=ctx.fmt, callback=ctx.callback)
 
 

@@ -29,6 +29,7 @@ import { renderScanSection }        from "./scan";
 import { renderAnalyzeSection }     from "./analyze";
 import { renderMaintenanceSection } from "./maintenance";
 import { renderLastfmSection }      from "./lastfm";
+import { renderListenBrainzSection } from "./listenbrainz";
 
 // Every section exposes this minimal shape. We accept it as a return type
 // from each section's mount function, then aggregate the cleanup hooks.
@@ -77,6 +78,12 @@ export async function renderSettings(host: HTMLElement): Promise<void> {
   // because both are "your playback / your account" preferences.
   const lastfm = await renderLastfmSection(host);
   cleanups.push(lastfm.cleanup);
+
+  // ListenBrainz sits right after Last.fm — same "your account" concern,
+  // and it adds importing ListenBrainz's generated playlists on top of
+  // scrobbling.
+  const listenbrainz = await renderListenBrainzSection(host);
+  cleanups.push(listenbrainz.cleanup);
 
   if (isAdmin) {
     // Both scan-finish and GC/vacuum can change stats AND folder track

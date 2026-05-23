@@ -146,6 +146,10 @@ CREATE INDEX IF NOT EXISTS idx_tracks_year    ON tracks(year);
 -- definition; Postgres supports partial indexes natively.
 CREATE INDEX IF NOT EXISTS idx_tracks_genre
     ON tracks(genre) WHERE genre IS NOT NULL;
+-- Recording MBID lookup — used when importing external playlists
+-- (ListenBrainz) where each track is matched by its MusicBrainz id first.
+CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_id
+    ON tracks(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
 -- GIN index on the search vector — the right structure for tsvector @@ tsquery.
 CREATE INDEX IF NOT EXISTS idx_tracks_search_tsv ON tracks USING GIN (search_tsv);
 

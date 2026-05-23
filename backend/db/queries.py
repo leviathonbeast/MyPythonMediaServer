@@ -2099,6 +2099,63 @@ def find_track_lyrics_by_name(artist: str, title: str) -> Optional[Dict[str, Any
     return _row_to_dict(row)
 
 
+# ---------------------------------------------------------------------------
+# Track resolution for external-playlist import (ListenBrainz, etc.)
+#
+# Importing a remote playlist means turning each remote track into a local
+# track id, or recording that we couldn't. We try the strongest signal first:
+# the MusicBrainz recording MBID (an exact, language-agnostic key), then fall
+# back to a case-insensitive artist+title match.
+# ---------------------------------------------------------------------------
+
+
+def find_track_id_by_musicbrainz_id(recording_mbid: str) -> Optional[int]:
+    """Return the local track id for a MusicBrainz recording MBID, or None.
+
+    MBIDs are globally unique per recording, so this is the most reliable
+    match — but only tracks whose tags carried an MBID (and were scanned with
+    it) are findable this way. LIMIT 1 guards the rare case of two files
+    sharing an MBID (e.g. the same recording in two folders)."""
+    if not recording_mbid:
+        return None
+    row = (
+        get_conn()
+        .execute(
+            "SELECT id FROM tracks WHERE musicbrainz_id = :mbid LIMIT 1",
+            {"mbid": recording_mbid},
+        )
+        .fetchone()
+    )
+    return int(row["id"]) if row is not None else None
+
+
+def find_track_id_by_artist_and_title(artist: str, title: str) -> Optional[int]:
+    """Return a local track id matching (artist, title), case-insensitive.
+
+    The fallback when no MBID match exists. Best-effort, not guaranteed
+    unique — covers, live versions and remasters can collide — so we take the
+    first hit. An empty artist or title yields None rather than matching
+    everything."""
+    if not artist or not title:
+        return None
+    row = (
+        get_conn()
+        .execute(
+            """
+        SELECT t.id AS id
+          FROM tracks t
+     LEFT JOIN artists ar ON ar.id = t.artist_id
+         WHERE t.title = :title COLLATE NOCASE
+           AND ar.name = :artist COLLATE NOCASE
+         LIMIT 1
+            """,
+            {"artist": artist, "title": title},
+        )
+        .fetchone()
+    )
+    return int(row["id"]) if row is not None else None
+
+
 # ===========================================================================
 # Bookmarks (getBookmarks / createBookmark / deleteBookmark)
 # ===========================================================================
