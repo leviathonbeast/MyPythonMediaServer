@@ -2,11 +2,25 @@ from __future__ import annotations
 
 import logging
 import math
+import subprocess
 
 import librosa
 import numpy as np
+import soundfile as sf
 
 logger = logging.getLogger(__name__)
+
+# Target sample rate for analysis. Low (vs 44.1k) on purpose: the timbral
+# features below don't need full bandwidth, and downsampling is the cheapest
+# lever on per-track DSP cost. Must stay fixed — it's baked into every stored
+# vector.
+_ANALYSIS_SR = 22050
+
+# Hard ceiling on how long the ffmpeg fallback decode may run before we give
+# up on a file. Decoding a ~60s excerpt is normally well under a second; this
+# only fires for a pathological/hung input so one bad file can't wedge a
+# worker forever.
+_FFMPEG_DECODE_TIMEOUT_S = 60
 
 
 # Fixed feature layout (44 dims total):
@@ -60,20 +74,7 @@ def extract_features(
         # ------------------------------------------------------------
         # Step 1: load a representative excerpt from the middle
         # ------------------------------------------------------------
-        duration = librosa.get_duration(path=path)
-
-        # Center the window on the middle of the track. For tracks shorter
-        # than the window, offset clamps to 0 and librosa just returns the
-        # whole file.
-        offset = max(0.0, (duration / 2.0) - (excerpt_seconds / 2.0))
-
-        y, sr = librosa.load(
-            path,
-            sr=22050,
-            mono=True,
-            offset=offset,
-            duration=excerpt_seconds,
-        )
+        y, sr = _load_excerpt(path, excerpt_seconds)
 
         # ------------------------------------------------------------
         # Step 2: degenerate guard
@@ -173,13 +174,112 @@ def extract_features(
 
         return cleaned
 
-    except Exception:
-        logger.debug(
-            "feature extraction failed for %s",
-            path,
-            exc_info=True,
-        )
+    except Exception as e:
+        # WARNING (not DEBUG) with the path + concise reason: when the analysis
+        # pass reports "failed=N", this is the only way to learn *which* files
+        # and why without re-running at DEBUG. Full traceback stays at DEBUG.
+        logger.warning("feature extraction failed for %s: %s", path, e)
+        logger.debug("feature extraction traceback for %s", path, exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Excerpt loading
+#
+# Two decode paths, chosen per file:
+#
+#   * Fast path — libsndfile (via librosa.load). Handles the formats libsndfile
+#     supports: FLAC (the bulk of a typical library), WAV, OGG, MP3. We probe
+#     with soundfile.info first purely to *decide* the path; the actual decode
+#     stays librosa.load with the original parameters, so the resulting vectors
+#     are byte-identical to everything already in the index.
+#
+#   * Fallback — ffmpeg. libsndfile can't read AAC/M4A/WMA (and rejects FLACs
+#     with prepended ID3 tags). librosa's own fallback for those is `audioread`,
+#     which is slow, deprecated (removed in librosa 1.0), and on Python 3.13
+#     drags in the removed `aifc`/`sunau` stdlib modules. We already ship
+#     ffmpeg for transcoding, so we decode the excerpt with it directly:
+#     faster, supported, and it handles essentially anything.
+# ---------------------------------------------------------------------------
+
+
+def _load_excerpt(path: str, excerpt_seconds: float) -> tuple["np.ndarray", int]:
+    """Load a centred, mono, `_ANALYSIS_SR` excerpt as (samples, sr).
+
+    Routes to libsndfile when it can read the file and to ffmpeg otherwise.
+    May raise — the caller wraps this in extract_features' try/except.
+    """
+    try:
+        info = sf.info(path)  # cheap header read; raises if libsndfile can't read it
+    except Exception:
+        return _ffmpeg_load_excerpt(path, excerpt_seconds)
+
+    # Center the window on the middle of the track. For tracks shorter than the
+    # window, offset clamps to 0 and librosa just returns the whole file.
+    # info.duration equals the old librosa.get_duration value exactly, so the
+    # offset — and therefore the feature vector — is unchanged.
+    offset = max(0.0, (info.duration / 2.0) - (excerpt_seconds / 2.0))
+    return librosa.load(
+        path,
+        sr=_ANALYSIS_SR,
+        mono=True,
+        offset=offset,
+        duration=excerpt_seconds,
+    )
+
+
+def _ffmpeg_load_excerpt(path: str, excerpt_seconds: float) -> tuple["np.ndarray", int]:
+    """Decode a centred mono excerpt at `_ANALYSIS_SR` via ffmpeg.
+
+    Used for formats libsndfile can't handle. ffmpeg does the seek, downmix and
+    resample itself and streams raw float32 PCM to stdout, which we read
+    straight into a numpy array.
+    """
+    from backend.config import get_settings
+
+    settings = get_settings()
+
+    # Center the window using a cheap tag-level duration read (mutagen reads
+    # m4a/aac/wma lengths without decoding). If unavailable, decode from start.
+    offset = 0.0
+    try:
+        from mutagen import File as _MutagenFile
+
+        mf = _MutagenFile(path)
+        dur = float(getattr(getattr(mf, "info", None), "length", 0.0) or 0.0)
+        if dur > 0.0:
+            offset = max(0.0, (dur / 2.0) - (excerpt_seconds / 2.0))
+    except Exception:
+        pass  # best-effort centring; offset=0 is a fine fallback
+
+    cmd = [
+        settings.ffmpeg_binary,
+        "-nostdin",
+        "-v", "error",
+        "-ss", f"{offset:.3f}",          # seek before -i for a fast input seek
+        "-t", f"{excerpt_seconds:.3f}",
+        "-i", path,
+        "-map", "0:a:0",                  # first audio stream only (ignores cover art)
+        "-ac", "1",                       # downmix to mono
+        "-ar", str(_ANALYSIS_SR),         # resample to analysis rate
+        "-f", "f32le",                    # raw little-endian float32 PCM
+        "-",
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=_FFMPEG_DECODE_TIMEOUT_S,
+    )
+    if proc.returncode != 0:
+        # Surface ffmpeg's own diagnostic so a decode failure is actionable.
+        msg = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise RuntimeError(f"ffmpeg decode failed: {msg[-1] if msg else 'unknown error'}")
+
+    # frombuffer aliases ffmpeg's read-only output buffer; copy so downstream
+    # librosa ops that expect a writable array are safe.
+    y = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    return y, _ANALYSIS_SR
 
 
 # ---------------------------------------------------------------------------

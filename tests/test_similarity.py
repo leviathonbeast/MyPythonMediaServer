@@ -14,6 +14,10 @@ vs force, progress/failure counting) without decoding real audio.
 from __future__ import annotations
 
 import time
+import types
+
+import numpy as np
+import pytest
 
 from backend.core import similarity as s
 from backend.core import sonic_analysis
@@ -27,6 +31,100 @@ _DATA = [
     (30, [9.0, 9.0, 9.0]),
     (40, [9.1, 9.0, 9.0]),   # near 30
 ]
+
+
+# ---------------------------------------------------------------------------
+# Excerpt loading: libsndfile fast path vs ffmpeg fallback.
+#
+# These are hermetic — soundfile.info, librosa.load and subprocess.run are all
+# mocked, so the tests assert the *routing* and command construction without
+# needing real audio files or ffmpeg installed.
+# ---------------------------------------------------------------------------
+
+
+class TestExcerptLoading:
+    def test_soundfile_readable_uses_librosa_not_ffmpeg(self, monkeypatch):
+        """When libsndfile can read the file (FLAC/WAV/OGG/MP3) we keep using
+        librosa.load with a centred offset — the path that produces vectors
+        identical to those already stored."""
+        monkeypatch.setattr(s.sf, "info", lambda p: types.SimpleNamespace(duration=100.0))
+
+        captured = {}
+
+        def fake_load(path, sr, mono, offset, duration):
+            captured.update(path=path, sr=sr, offset=offset, duration=duration)
+            return np.zeros(8, dtype=np.float32), sr
+
+        monkeypatch.setattr(s.librosa, "load", fake_load)
+        # If the fallback is reached this blows up the test.
+        monkeypatch.setattr(
+            s, "_ffmpeg_load_excerpt",
+            lambda *a, **k: pytest.fail("ffmpeg fallback used for a readable file"),
+        )
+
+        y, sr = s._load_excerpt("song.flac", 60.0)
+        assert sr == s._ANALYSIS_SR
+        assert captured["duration"] == 60.0
+        assert captured["offset"] == 100.0 / 2 - 30.0  # centred 60s window
+
+    def test_unreadable_format_falls_back_to_ffmpeg(self, monkeypatch):
+        """libsndfile can't read AAC/M4A/WMA → soundfile.info raises → we route
+        to the ffmpeg decoder rather than librosa's deprecated audioread path."""
+        def boom(_p):
+            raise RuntimeError("libsndfile cannot open")
+
+        monkeypatch.setattr(s.sf, "info", boom)
+        seen = {}
+        monkeypatch.setattr(
+            s, "_ffmpeg_load_excerpt",
+            lambda path, sec: (seen.update(path=path, sec=sec), (np.zeros(3, np.float32), s._ANALYSIS_SR))[1],
+        )
+        y, sr = s._load_excerpt("song.m4a", 45.0)
+        assert seen == {"path": "song.m4a", "sec": 45.0}
+        assert sr == s._ANALYSIS_SR
+
+    def test_ffmpeg_decode_parses_f32le_and_builds_command(self, monkeypatch):
+        """The ffmpeg fallback streams raw float32 PCM; we read it straight into
+        a numpy array and the command requests mono f32le at the analysis SR."""
+        samples = np.array([0.1, -0.2, 0.3, 0.0], dtype=np.float32)
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return types.SimpleNamespace(returncode=0, stdout=samples.tobytes(), stderr=b"")
+
+        monkeypatch.setattr(s.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: types.SimpleNamespace(ffmpeg_binary="ffmpeg"),
+        )
+
+        y, sr = s._ffmpeg_load_excerpt("song.m4a", 30.0)
+        assert sr == s._ANALYSIS_SR
+        assert np.array_equal(y, samples)
+        assert y.flags.writeable  # copied out of the read-only stdout buffer
+        cmd = captured["cmd"]
+        assert cmd[0] == "ffmpeg"
+        assert "song.m4a" in cmd
+        assert cmd[cmd.index("-ar") + 1] == str(s._ANALYSIS_SR)
+        assert cmd[cmd.index("-ac") + 1] == "1"
+        assert cmd[cmd.index("-f") + 1] == "f32le"
+
+    def test_ffmpeg_nonzero_exit_raises(self, monkeypatch):
+        """A failed decode raises (so extract_features counts it as failed and
+        logs the path) rather than returning silent garbage."""
+        monkeypatch.setattr(
+            s.subprocess, "run",
+            lambda cmd, **kw: types.SimpleNamespace(
+                returncode=1, stdout=b"", stderr=b"moov atom not found\n"
+            ),
+        )
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: types.SimpleNamespace(ffmpeg_binary="ffmpeg"),
+        )
+        with pytest.raises(RuntimeError):
+            s._ffmpeg_load_excerpt("broken.m4a", 30.0)
 
 
 # ---------------------------------------------------------------------------
