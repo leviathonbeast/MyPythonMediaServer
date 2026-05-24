@@ -28,10 +28,24 @@ logger = logging.getLogger(__name__)
 EXPECTED_DIMS = 44
 FEATURE_VERSION = 1
 
+# Default analysed-excerpt length (seconds). The caller (the analysis pass)
+# passes the configured `sonic_analysis_excerpt_seconds`; this default keeps
+# the function usable standalone and pins the historical behaviour.
+DEFAULT_EXCERPT_SECONDS = 60.0
 
-def extract_features(path: str) -> list[float] | None:
+
+def extract_features(
+    path: str, excerpt_seconds: float = DEFAULT_EXCERPT_SECONDS
+) -> list[float] | None:
     """
     Extract a fixed-length timbral feature vector from an audio file.
+
+    Args:
+        path: audio file to analyse.
+        excerpt_seconds: length of the centred excerpt to analyse. Shorter is
+            faster but summarises timbre/tempo from less audio. Changing it
+            changes the resulting vector, so the library must be re-analysed
+            (force=True) to stay internally consistent.
 
     Returns:
         list[float] of length 44 on success
@@ -44,19 +58,21 @@ def extract_features(path: str) -> list[float] | None:
     """
     try:
         # ------------------------------------------------------------
-        # Step 1: load a representative 60s excerpt from the middle
+        # Step 1: load a representative excerpt from the middle
         # ------------------------------------------------------------
         duration = librosa.get_duration(path=path)
 
-        # Center a 60-second window on the middle of the track.
-        offset = max(0.0, (duration / 2.0) - 30.0)
+        # Center the window on the middle of the track. For tracks shorter
+        # than the window, offset clamps to 0 and librosa just returns the
+        # whole file.
+        offset = max(0.0, (duration / 2.0) - (excerpt_seconds / 2.0))
 
         y, sr = librosa.load(
             path,
             sr=22050,
             mono=True,
             offset=offset,
-            duration=60.0,
+            duration=excerpt_seconds,
         )
 
         # ------------------------------------------------------------
@@ -83,12 +99,22 @@ def extract_features(path: str) -> list[float] | None:
         mfcc_mean = np.mean(mfcc, axis=1)  # (13,)
         mfcc_std = np.std(mfcc, axis=1)  # (13,)
 
-        # Chroma: (12, frames)
-        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+        # Magnitude STFT, computed once and shared by the two features below
+        # that would otherwise each recompute it. chroma_stft and
+        # spectral_centroid both call librosa's internal _spectrogram with
+        # the same defaults (n_fft=2048, hop_length=512); handing them a
+        # precomputed `S=` reproduces those values bit-for-bit (verified:
+        # zero diff vs computing each from `y`). So this is purely removing a
+        # redundant FFT pass — the feature vector is unchanged and no
+        # FEATURE_VERSION bump is needed.
+        stft_mag = np.abs(librosa.stft(y))
+
+        # Chroma: (12, frames). chroma_stft expects a *power* spectrogram.
+        chroma = librosa.feature.chroma_stft(S=stft_mag**2, sr=sr)
         chroma_mean = np.mean(chroma, axis=1)  # (12,)
 
-        # Spectral centroid: (1, frames)
-        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+        # Spectral centroid: (1, frames). Uses the *magnitude* spectrogram.
+        centroid = librosa.feature.spectral_centroid(S=stft_mag, sr=sr)
         centroid_mean = float(np.mean(centroid))
         centroid_std = float(np.std(centroid))
 

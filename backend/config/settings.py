@@ -194,6 +194,22 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- Sonic analysis (DSP feature extraction) ---------------------------
+    # Length, in seconds, of the audio excerpt analysed per track. A window of
+    # this size is centred on the middle of each track and the timbral feature
+    # vector is computed from it. Cost scales ~linearly with length: halving it
+    # roughly doubles analysis throughput.
+    #
+    # Trade-off: a shorter excerpt is faster but slightly less representative
+    # (tempo/timbre summarised from less audio). 60s is the original,
+    # conservative default; 30s is a good speed/quality compromise.
+    #
+    # IMPORTANT: this changes the *values* of the feature vectors, so rows
+    # analysed at one length are inconsistent with rows analysed at another.
+    # After changing it, re-run analysis with force=true
+    # (POST /api/analyze?force=true) to re-fingerprint the whole library.
+    sonic_analysis_excerpt_seconds: float = Field(default=60.0, gt=0)
+
     # ---- Streaming ---------------------------------------------------------
     # Default chunk size for HTTP range responses. 64KB is a reasonable sweet
     # spot — small enough that seeking feels instant, large enough that we

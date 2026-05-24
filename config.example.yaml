@@ -88,6 +88,19 @@ scanner_batch_size: 200
 scanner_watch_enabled: false
 scanner_watch_interval_seconds: 300   # 5 minutes; floor of 30s enforced at runtime
 
+# --- Sonic analysis -------------------------------------------------------- #
+
+# Length (seconds) of the centred audio excerpt analysed per track by the
+# sonic-similarity feature extractor (POST /api/analyze). Cost scales roughly
+# linearly: 30 is about twice as fast as 60, with a small hit to how
+# representative the timbre/tempo summary is. 60 is the conservative default;
+# 30 is a good speed/quality compromise for large libraries.
+#
+# Changing this changes the feature values, so old and new rows would be
+# inconsistent. After changing it, re-fingerprint everything with
+# POST /api/analyze?force=true.
+sonic_analysis_excerpt_seconds: 60
+
 # --- Streaming ------------------------------------------------------------- #
 
 # Paths to ffmpeg and ffprobe. Use "ffmpeg"/"ffprobe" if they are on PATH,

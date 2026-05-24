@@ -124,7 +124,10 @@ class TestAnalysisPass:
     def test_populates_features(self, client, monkeypatch):
         t1, t2 = _seed_two_tracks()
         monkeypatch.setattr(
-            sonic_analysis, "extract_features", lambda path: [1.0] * s.EXPECTED_DIMS
+            sonic_analysis, "extract_features",
+            # The pass calls extract_features(path, excerpt_seconds); accept
+            # and ignore the second arg.
+            lambda path, excerpt_seconds=None: [1.0] * s.EXPECTED_DIMS,
         )
         prog = sonic_analysis.analyze_all_blocking(force=False)
         assert prog.analyzed == 2
@@ -135,7 +138,10 @@ class TestAnalysisPass:
     def test_incremental_skips_already_analyzed(self, client, monkeypatch):
         _seed_two_tracks()
         monkeypatch.setattr(
-            sonic_analysis, "extract_features", lambda path: [1.0] * s.EXPECTED_DIMS
+            sonic_analysis, "extract_features",
+            # The pass calls extract_features(path, excerpt_seconds); accept
+            # and ignore the second arg.
+            lambda path, excerpt_seconds=None: [1.0] * s.EXPECTED_DIMS,
         )
         sonic_analysis.analyze_all_blocking(force=False)
         # Second incremental run: nothing left to do.
@@ -146,7 +152,10 @@ class TestAnalysisPass:
     def test_force_reanalyzes_everything(self, client, monkeypatch):
         _seed_two_tracks()
         monkeypatch.setattr(
-            sonic_analysis, "extract_features", lambda path: [1.0] * s.EXPECTED_DIMS
+            sonic_analysis, "extract_features",
+            # The pass calls extract_features(path, excerpt_seconds); accept
+            # and ignore the second arg.
+            lambda path, excerpt_seconds=None: [1.0] * s.EXPECTED_DIMS,
         )
         sonic_analysis.analyze_all_blocking(force=False)
         prog = sonic_analysis.analyze_all_blocking(force=True)
@@ -158,7 +167,9 @@ class TestAnalysisPass:
         # First track extracts, second fails (None).
         monkeypatch.setattr(
             sonic_analysis, "extract_features",
-            lambda path: [1.0] * s.EXPECTED_DIMS if path.endswith("a.mp3") else None,
+            lambda path, excerpt_seconds=None: (
+                [1.0] * s.EXPECTED_DIMS if path.endswith("a.mp3") else None
+            ),
         )
         prog = sonic_analysis.analyze_all_blocking(force=False)
         assert prog.analyzed == 1

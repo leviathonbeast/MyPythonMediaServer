@@ -21,6 +21,11 @@ psycopg[binary,pool]>=3.1.0
 mutagen==1.47.0
 librosa==0.11.0
 numpy==2.4.6
+# Pins native DSP thread pools (OpenBLAS etc.) to one thread during the
+# sonic-analysis pass so they don't oversubscribe our worker pool. Already
+# pulled in transitively by librosa -> scikit-learn; declared here because we
+# import it directly in core/sonic_analysis.py.
+threadpoolctl>=3.1.0
 
 # ---- Image processing -------------------------------------------------------
 # Used for on-the-fly cover-art resizing in getCoverArt. Pillow's bundled
