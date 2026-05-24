@@ -36,51 +36,91 @@ _DATA = [
 # ---------------------------------------------------------------------------
 # Excerpt loading: libsndfile fast path vs ffmpeg fallback.
 #
-# These are hermetic — soundfile.info, librosa.load and subprocess.run are all
-# mocked, so the tests assert the *routing* and command construction without
-# needing real audio files or ffmpeg installed.
+# These are hermetic — soundfile.SoundFile and subprocess.run are mocked, so
+# the tests assert the *routing* and command construction without needing real
+# audio files or ffmpeg installed.
 # ---------------------------------------------------------------------------
 
 
+class _FakeSoundFile:
+    """Minimal stand-in for soundfile.SoundFile usable as a context manager.
+
+    `read_error` makes .read() raise — the real-world case where libsndfile
+    opens the header fine but can't decode the frames.
+    """
+
+    def __init__(self, frames, samplerate, data=None, read_error=None):
+        self.frames = frames
+        self.samplerate = samplerate
+        self._data = data
+        self._read_error = read_error
+        self.seeked_to = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def seek(self, n):
+        self.seeked_to = n
+
+    def read(self, frames, dtype, always_2d):
+        if self._read_error is not None:
+            raise self._read_error
+        return self._data
+
+
 class TestExcerptLoading:
-    def test_soundfile_readable_uses_librosa_not_ffmpeg(self, monkeypatch):
-        """When libsndfile can read the file (FLAC/WAV/OGG/MP3) we keep using
-        librosa.load with a centred offset — the path that produces vectors
-        identical to those already stored."""
-        monkeypatch.setattr(s.sf, "info", lambda p: types.SimpleNamespace(duration=100.0))
-
-        captured = {}
-
-        def fake_load(path, sr, mono, offset, duration):
-            captured.update(path=path, sr=sr, offset=offset, duration=duration)
-            return np.zeros(8, dtype=np.float32), sr
-
-        monkeypatch.setattr(s.librosa, "load", fake_load)
-        # If the fallback is reached this blows up the test.
+    def test_soundfile_readable_decodes_without_ffmpeg(self, monkeypatch):
+        """When libsndfile can decode the file we use the soundfile path and
+        never touch ffmpeg. Using sr == analysis SR keeps the returned samples
+        equal to what was read (no resample), so we can assert on them."""
+        data = np.linspace(-0.5, 0.5, 4410, dtype=np.float32)  # mono, 1-D
+        fake = _FakeSoundFile(frames=4410, samplerate=s._ANALYSIS_SR, data=data)
+        monkeypatch.setattr(s.sf, "SoundFile", lambda p: fake)
         monkeypatch.setattr(
             s, "_ffmpeg_load_excerpt",
-            lambda *a, **k: pytest.fail("ffmpeg fallback used for a readable file"),
+            lambda *a, **k: pytest.fail("ffmpeg used for a decodable file"),
         )
 
         y, sr = s._load_excerpt("song.flac", 60.0)
         assert sr == s._ANALYSIS_SR
-        assert captured["duration"] == 60.0
-        assert captured["offset"] == 100.0 / 2 - 30.0  # centred 60s window
+        assert np.array_equal(y, data)
 
-    def test_unreadable_format_falls_back_to_ffmpeg(self, monkeypatch):
-        """libsndfile can't read AAC/M4A/WMA → soundfile.info raises → we route
-        to the ffmpeg decoder rather than librosa's deprecated audioread path."""
+    def test_soundfile_open_failure_falls_back_to_ffmpeg(self, monkeypatch):
+        """libsndfile can't even open AAC/M4A/WMA → route to ffmpeg, not
+        librosa's deprecated audioread path."""
         def boom(_p):
             raise RuntimeError("libsndfile cannot open")
 
-        monkeypatch.setattr(s.sf, "info", boom)
+        monkeypatch.setattr(s.sf, "SoundFile", boom)
         seen = {}
         monkeypatch.setattr(
             s, "_ffmpeg_load_excerpt",
-            lambda path, sec: (seen.update(path=path, sec=sec), (np.zeros(3, np.float32), s._ANALYSIS_SR))[1],
+            lambda path, sec: (
+                seen.update(path=path, sec=sec),
+                (np.zeros(3, np.float32), s._ANALYSIS_SR),
+            )[1],
         )
         y, sr = s._load_excerpt("song.m4a", 45.0)
         assert seen == {"path": "song.m4a", "sec": 45.0}
+        assert sr == s._ANALYSIS_SR
+
+    def test_soundfile_decode_failure_falls_back_to_ffmpeg(self, monkeypatch):
+        """Header opens but frames won't decode (partial/odd FLAC) — the exact
+        case that used to slip through to audioread. Must reach ffmpeg."""
+        fake = _FakeSoundFile(
+            frames=44100, samplerate=44100, read_error=RuntimeError("frame decode failed")
+        )
+        monkeypatch.setattr(s.sf, "SoundFile", lambda p: fake)
+        hit = {}
+        monkeypatch.setattr(
+            s, "_ffmpeg_load_excerpt",
+            lambda path, sec: (hit.setdefault("yes", True), (np.zeros(2, np.float32), s._ANALYSIS_SR))[1],
+        )
+        y, sr = s._load_excerpt("partial.flac", 60.0)
+        assert hit.get("yes") is True
         assert sr == s._ANALYSIS_SR
 
     def test_ffmpeg_decode_parses_f32le_and_builds_command(self, monkeypatch):

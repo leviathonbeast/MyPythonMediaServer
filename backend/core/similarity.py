@@ -188,44 +188,65 @@ def extract_features(
 #
 # Two decode paths, chosen per file:
 #
-#   * Fast path — libsndfile (via librosa.load). Handles the formats libsndfile
-#     supports: FLAC (the bulk of a typical library), WAV, OGG, MP3. We probe
-#     with soundfile.info first purely to *decide* the path; the actual decode
-#     stays librosa.load with the original parameters, so the resulting vectors
-#     are byte-identical to everything already in the index.
+#   * Fast path — libsndfile (via soundfile). Handles the formats libsndfile
+#     supports: FLAC (the bulk of a typical library), WAV, OGG, MP3. We decode
+#     the excerpt with soundfile *directly* — read the frames, then downmix and
+#     resample with the same librosa helpers librosa.load uses internally, so
+#     the result is byte-for-byte identical to the old librosa.load path (and
+#     thus to every vector already in the index — no re-analysis needed).
 #
-#   * Fallback — ffmpeg. libsndfile can't read AAC/M4A/WMA (and rejects FLACs
-#     with prepended ID3 tags). librosa's own fallback for those is `audioread`,
-#     which is slow, deprecated (removed in librosa 1.0), and on Python 3.13
-#     drags in the removed `aifc`/`sunau` stdlib modules. We already ship
-#     ffmpeg for transcoding, so we decode the excerpt with it directly:
-#     faster, supported, and it handles essentially anything.
+#   * Fallback — ffmpeg. Triggered by ANY soundfile failure: not just formats
+#     libsndfile can't open (AAC/M4A/WMA), but also files whose header reads
+#     fine yet whose frames won't decode/seek (a partially corrupt FLAC, ID3-
+#     prefixed FLAC, etc.). Decoding through soundfile ourselves — instead of
+#     letting librosa.load fall back to `audioread` — is the whole point:
+#     audioread is slow, deprecated (removed in librosa 1.0), and on Python
+#     3.13 imports the removed `aifc`/`sunau` stdlib modules. We already ship
+#     ffmpeg for transcoding, so we decode with it: faster, supported, and it
+#     handles essentially anything.
+#
+# Why decode soundfile ourselves rather than call librosa.load: librosa.load
+# swallows a soundfile failure and silently retries with audioread (that's the
+# "PySoundFile failed. Trying audioread instead." warning). The only way to
+# intercept that and route to ffmpeg instead is to do the soundfile read here
+# and catch the exception. (We can't escalate the warning to an exception —
+# warnings.catch_warnings mutates global state and isn't thread-safe, and this
+# runs across the analysis worker pool.)
 # ---------------------------------------------------------------------------
 
 
 def _load_excerpt(path: str, excerpt_seconds: float) -> tuple["np.ndarray", int]:
     """Load a centred, mono, `_ANALYSIS_SR` excerpt as (samples, sr).
 
-    Routes to libsndfile when it can read the file and to ffmpeg otherwise.
-    May raise — the caller wraps this in extract_features' try/except.
+    Decodes via libsndfile when it can, else ffmpeg. May raise — the caller
+    wraps this in extract_features' try/except.
     """
     try:
-        info = sf.info(path)  # cheap header read; raises if libsndfile can't read it
+        with sf.SoundFile(path) as snd:
+            sr_native = snd.samplerate
+            duration = snd.frames / float(sr_native)
+            # Center the window on the middle of the track. For tracks shorter
+            # than the window, offset clamps to 0 and we read the whole file.
+            offset = max(0.0, (duration / 2.0) - (excerpt_seconds / 2.0))
+            if offset:
+                snd.seek(int(offset * sr_native))
+            # always_2d=False + .T mirrors librosa.load's own read, so the
+            # downmix/resample below reproduce its output exactly.
+            y = snd.read(
+                frames=int(excerpt_seconds * sr_native),
+                dtype="float32",
+                always_2d=False,
+            ).T
     except Exception:
+        # libsndfile couldn't open OR couldn't decode/seek this file — hand it
+        # to ffmpeg rather than librosa's deprecated audioread fallback.
         return _ffmpeg_load_excerpt(path, excerpt_seconds)
 
-    # Center the window on the middle of the track. For tracks shorter than the
-    # window, offset clamps to 0 and librosa just returns the whole file.
-    # info.duration equals the old librosa.get_duration value exactly, so the
-    # offset — and therefore the feature vector — is unchanged.
-    offset = max(0.0, (info.duration / 2.0) - (excerpt_seconds / 2.0))
-    return librosa.load(
-        path,
-        sr=_ANALYSIS_SR,
-        mono=True,
-        offset=offset,
-        duration=excerpt_seconds,
-    )
+    if y.ndim > 1:
+        y = librosa.to_mono(y)
+    if sr_native != _ANALYSIS_SR:
+        y = librosa.resample(y, orig_sr=sr_native, target_sr=_ANALYSIS_SR)
+    return y, _ANALYSIS_SR
 
 
 def _ffmpeg_load_excerpt(path: str, excerpt_seconds: float) -> tuple["np.ndarray", int]:
