@@ -7,8 +7,12 @@ the given artist and similar artists" (canonically Last.fm-driven). Muse has no
 Last.fm similar-artists data, but it *does* have per-track DSP fingerprints in
 track_features — so we reuse the sonic-similarity engine instead:
 
-  pick a random seed track from the requested entity  →  similarity.find_similar()
+  pick a random seed track from the requested entity  →  find_similar_deduped()
   →  [seed, ...nearest neighbours]  (capped at `count`).
+
+Neighbours are de-duplicated by logical song (recording MBID, else artist+title)
+so a library that holds the same recording as several files doesn't fill the
+radio with the same song repeated — see helpers.find_similar_deduped.
 
 The seed is prepended so the queue actually starts with the requested artist (the
 "from the given artist" half of the spec); its neighbours supply the "and similar
@@ -34,10 +38,11 @@ from typing import Optional
 from fastapi import Depends, Query, Response
 
 from backend.db import queries
-from backend.core import library, similarity
+from backend.core import library
 
 from .helpers import (
     _double_register,
+    find_similar_deduped,
     router,
     responses,
     SubsonicContext,
@@ -61,11 +66,11 @@ def _build_similar(
         )
 
     # find_similar excludes the seed itself, so ask for count-1 and prepend the
-    # seed below. Empty result = no feature vectors (seed unanalysed or whole
-    # library unanalysed) → empty song list, not an error.
-    scored = similarity.find_similar(
-        queries.get_all_track_features(), seed_id, count - 1
-    )
+    # seed below. Deduped so duplicate files of the same recording (including
+    # copies of the seed) don't pad the radio with repeats. Empty result = no
+    # feature vectors (seed unanalysed or whole library unanalysed) → empty song
+    # list, not an error.
+    scored = find_similar_deduped(seed_id, count - 1)
     if not scored:
         return responses.ok(
             {key: {"song": []}}, fmt=ctx.fmt, callback=ctx.callback

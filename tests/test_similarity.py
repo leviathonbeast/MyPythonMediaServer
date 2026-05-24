@@ -19,6 +19,7 @@ import types
 import numpy as np
 import pytest
 
+from backend.api.subsonic.helpers import find_similar_deduped
 from backend.core import similarity as s
 from backend.core import sonic_analysis
 from backend.db import queries, transaction
@@ -197,6 +198,108 @@ class TestFindSimilar:
         data = [(1, [0.0, 1.0, 7.0]), (2, [2.0, 3.0, 7.0]), (3, [5.0, 1.0, 7.0])]
         res = s.find_similar(data, 1, 5)
         assert all(score == score for _, score in res)  # NaN != NaN
+
+
+# ---------------------------------------------------------------------------
+# find_similar de-duplication (key_for) — keep duplicate recordings out of radio
+# ---------------------------------------------------------------------------
+
+
+class TestFindSimilarDedup:
+    # Five tracks; 1 is the query. 5 is a duplicate of the query's song (key A),
+    # 2 and 3 are duplicates of each other (key B), 4 is its own song (key C).
+    _DUP = [
+        (1, [0.0, 0.0]),
+        (5, [0.02, 0.0]),   # duplicate of the query song
+        (2, [1.0, 0.0]),
+        (3, [1.02, 0.0]),   # duplicate of 2
+        (4, [5.0, 5.0]),
+    ]
+    _KEYS = {1: "A", 5: "A", 2: "B", 3: "B", 4: "C"}
+
+    def _key_for(self, tid):
+        return self._KEYS.get(tid)
+
+    def test_collapses_duplicates_and_excludes_query_song(self):
+        res = s.find_similar(self._DUP, 1, 10, key_for=self._key_for)
+        ids = [tid for tid, _ in res]
+        keys = [self._KEYS[t] for t in ids]
+        assert len(keys) == len(set(keys))   # no logical song repeated
+        assert 5 not in ids                  # the query's own duplicate is dropped
+        assert "A" not in keys               # query's key never reappears
+        assert set(keys) == {"B", "C"}
+
+    def test_keeps_the_higher_ranked_of_a_duplicate_group(self):
+        full = [tid for tid, _ in s.find_similar(self._DUP, 1, 10)]
+        deduped = [tid for tid, _ in s.find_similar(self._DUP, 1, 10, key_for=self._key_for)]
+        first_b = next(t for t in full if self._KEYS[t] == "B")
+        other_b = ({2, 3} - {first_b}).pop()
+        assert first_b in deduped
+        assert other_b not in deduped
+
+    def test_none_key_tracks_are_never_treated_as_duplicates(self):
+        data = [(1, [0.0, 0.0]), (2, [1.0, 0.0]), (3, [1.01, 0.0])]
+        keys = {1: "A", 2: None, 3: None}
+        res = s.find_similar(data, 1, 10, key_for=lambda t: keys[t])
+        assert {tid for tid, _ in res} == {2, 3}
+
+    def test_without_key_for_duplicates_are_kept(self):
+        # Back-compat: no key_for → original behaviour, duplicates included.
+        ids = {tid for tid, _ in s.find_similar(self._DUP, 1, 10)}
+        assert {2, 3, 5} <= ids
+
+
+# ---------------------------------------------------------------------------
+# find_similar_deduped — the API helper that keys real track rows by MBID /
+# artist+title (DB-backed).
+# ---------------------------------------------------------------------------
+
+
+class TestFindSimilarDedupedHelper:
+    def _seed(self):
+        """Seed a folder of tracks including duplicate recordings:
+          - the seed song, plus a second file of it (same artist+title)
+          - 'One', plus a second file of it (same artist+title, no MBID)
+          - an MBID-tagged track, plus another file sharing that MBID
+        """
+        D = s.EXPECTED_DIMS
+        with transaction():
+            folder = queries.add_music_folder(name="d", path="/d")
+            now = int(time.time())
+
+            def mk(path, artist_name, title, fill, mbid=None):
+                artist = queries.upsert_artist(artist_name)
+                tid = queries.upsert_track({
+                    "album_id": None, "artist_id": artist, "music_folder_id": folder,
+                    "path": path, "title": title, "track_number": 1, "disc_number": 1,
+                    "duration": 180, "bitrate": 320, "size": 1, "suffix": "flac",
+                    "content_type": "audio/flac", "year": 2024, "genre": "x",
+                    "mtime": now, "content_hash": None, "last_scanned": now,
+                    "musicbrainz_id": mbid,
+                })
+                queries.upsert_track_features(tid, [fill] * D, s.FEATURE_VERSION)
+                return tid
+
+            return {
+                "seed":    mk("/d/seed.flac",  "X", "Seed", 0.00),
+                "seeddup": mk("/d/seed2.flac", "X", "Seed", 0.01),  # dup of seed
+                "one":     mk("/d/one.flac",   "Y", "One",  0.10),
+                "onedup":  mk("/d/one2.flac",  "Y", "One",  0.11),  # dup of one
+                "mb":      mk("/d/mb.flac",    "Z", "MB A",  0.20, mbid="rec-1"),
+                "mbdup":   mk("/d/mb2.flac",   "Z", "MB B",  0.21, mbid="rec-1"),  # dup by MBID
+            }
+
+    def test_radio_contains_no_duplicate_songs(self, client):
+        ids = self._seed()
+        got = [tid for tid, _ in find_similar_deduped(ids["seed"], 50)]
+
+        # The seed and its duplicate file never appear in its own radio.
+        assert ids["seed"] not in got
+        assert ids["seeddup"] not in got
+        # Exactly one of each duplicate pair survives — by artist+title…
+        assert (ids["one"] in got) ^ (ids["onedup"] in got)
+        # …and by shared recording MBID (even though their titles differ).
+        assert (ids["mb"] in got) ^ (ids["mbdup"] in got)
 
 
 # ---------------------------------------------------------------------------

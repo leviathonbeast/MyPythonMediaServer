@@ -78,6 +78,48 @@ def _playlist_row_to_subsonic(playlist: dict) -> dict:
 
 from ..deps import SubsonicAuthError, SubsonicContext, subsonic_context
 
+
+def find_similar_deduped(seed_id: int, count: int) -> list[tuple[int, float]]:
+    """similarity.find_similar for a seed, with library duplicates collapsed.
+
+    A library commonly holds the same recording as several files (a single plus
+    its album track, a remaster beside the original, plain duplicate rips).
+    Their fingerprints are near-identical, so a raw nearest-neighbour query
+    stacks every copy at the top and "radio" replays one song repeatedly. We
+    give find_similar a key function that identifies a *logical song* — by
+    recording MBID when the file is tagged, else case-insensitive artist+title —
+    so only the first copy of each is kept (and copies of the seed are dropped).
+
+    Track rows are cached per call so the key function doesn't re-query an id it
+    has already looked up while walking the ranking.
+    """
+    from backend.db import queries
+    from backend.core import similarity
+
+    cache: dict[int, Optional[dict]] = {}
+
+    def _track(track_id: int) -> Optional[dict]:
+        if track_id not in cache:
+            cache[track_id] = queries.get_track(track_id)
+        return cache[track_id]
+
+    def _key_for(track_id: int):
+        row = _track(track_id)
+        if row is None:
+            return None
+        mbid = (row.get("musicbrainz_id") or "").strip().lower()
+        if mbid:
+            return ("mbid", mbid)
+        artist = (row.get("artist_name") or "").strip().lower()
+        title = (row.get("title") or "").strip().lower()
+        # No usable identity → return None so it's never treated as a duplicate.
+        return ("title", artist, title) if (artist or title) else None
+
+    return similarity.find_similar(
+        queries.get_all_track_features(), seed_id, count, key_for=_key_for
+    )
+
+
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rest", tags=["subsonic"])

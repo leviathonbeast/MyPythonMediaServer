@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import subprocess
+from typing import Callable, Hashable, Optional
 
 import librosa
 import numpy as np
@@ -354,10 +355,33 @@ def find_similar(
     all_features: list[tuple[int, list[float]]],
     query_id: int,
     count: int,
+    *,
+    key_for: Optional[Callable[[int], Optional[Hashable]]] = None,
 ) -> list[tuple[int, float]]:
     """Top-`count` tracks most sonically similar to `query_id`, most-similar
     first, excluding the query track itself. Returns [(track_id, score)].
-    Empty list if the query track has no feature vector."""
+    Empty list if the query track has no feature vector.
+
+    De-duplication (`key_for`):
+        A music library routinely holds the *same* recording as several files —
+        a track on both a single and its album, a remaster beside the original,
+        or plain duplicate rips. Their fingerprints are near-identical, so a raw
+        nearest-neighbour query stacks all the copies at the top and "song
+        radio" ends up replaying one song several times in a row.
+
+        Pass `key_for` to collapse them: it maps a track id to a hashable
+        identity (e.g. recording MBID, or artist+title) — or None when no
+        identity is known. The walk keeps only the first track seen per key and
+        also skips any track sharing the query track's key (its own duplicates).
+        Tracks whose key is None are never treated as duplicates of each other.
+
+        Because dedup can discard candidates, the walk continues down the full
+        ranking until it has `count` unique results (or runs out), so callers
+        still get `count` distinct songs when the library can supply them.
+
+        When `key_for` is None the behaviour is unchanged: only the query id
+        itself is excluded.
+    """
     if count <= 0 or not all_features:
         return []
     ids, mat = _build_matrix(all_features)
@@ -371,11 +395,28 @@ def find_similar(
     query_norm = np.linalg.norm(query) or 1.0
     cos = (std @ query) / (qn * query_norm)
     order = np.argsort(cos)[::-1]
+
+    # Seed the seen-set with the query's own identity so its duplicate files
+    # are excluded along with the query track itself.
+    seen_keys: set[Hashable] = set()
+    if key_for is not None:
+        query_key = key_for(query_id)
+        if query_key is not None:
+            seen_keys.add(query_key)
+
     out: list[tuple[int, float]] = []
     for idx in order:
-        if ids[idx] == query_id:
+        tid = ids[idx]
+        if tid == query_id:
             continue
-        out.append((ids[idx], _score(float(cos[idx]))))
+        if key_for is not None:
+            k = key_for(tid)
+            # None == "no known identity": never deduplicated against others.
+            if k is not None:
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+        out.append((tid, _score(float(cos[idx]))))
         if len(out) >= count:
             break
     return out

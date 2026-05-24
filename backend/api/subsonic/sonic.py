@@ -23,6 +23,7 @@ from backend.core import library, similarity
 
 from .helpers import (
     _double_register,
+    find_similar_deduped,
     router,
     responses,
     SubsonicContext,
@@ -63,7 +64,9 @@ def get_sonic_similar_tracks(
             fmt=ctx.fmt, callback=ctx.callback,
         )
 
-    scored = similarity.find_similar(queries.get_all_track_features(), rid, count)
+    # Dedup so duplicate files of the same recording don't fill the radio with
+    # the same song repeated (see find_similar_deduped).
+    scored = find_similar_deduped(rid, count)
     return responses.ok(
         {"sonicMatch": _sonic_match(scored)}, fmt=ctx.fmt, callback=ctx.callback
     )
