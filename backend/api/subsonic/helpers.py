@@ -94,26 +94,14 @@ def find_similar_deduped(seed_id: int, count: int) -> list[tuple[int, float]]:
     has already looked up while walking the ranking.
     """
     from backend.db import queries
-    from backend.core import similarity
+    from backend.core import library, similarity
 
     cache: dict[int, Optional[dict]] = {}
 
-    def _track(track_id: int) -> Optional[dict]:
+    def _key_for(track_id: int):
         if track_id not in cache:
             cache[track_id] = queries.get_track(track_id)
-        return cache[track_id]
-
-    def _key_for(track_id: int):
-        row = _track(track_id)
-        if row is None:
-            return None
-        mbid = (row.get("musicbrainz_id") or "").strip().lower()
-        if mbid:
-            return ("mbid", mbid)
-        artist = (row.get("artist_name") or "").strip().lower()
-        title = (row.get("title") or "").strip().lower()
-        # No usable identity → return None so it's never treated as a duplicate.
-        return ("title", artist, title) if (artist or title) else None
+        return library.logical_song_key(cache[track_id])
 
     return similarity.find_similar(
         queries.get_all_track_features(), seed_id, count, key_for=_key_for

@@ -22,7 +22,21 @@ import {
   getPlayQueueByIndex, savePlayQueueByIndex,
   getScrobbleThreshold,
   getLyricsBySongId, type SongLyrics,
+  continueRadio,
 } from "./api";
+
+// Endless mode (autoplay). When on, the queue auto-extends with tracks
+// similar to recent listening so it never runs dry.
+//   * REFILL_WHEN_REMAINING — start fetching once this few tracks are left
+//     after the current one, so the next song is ready before silence.
+//   * REFILL_BATCH — how many to ask the server for each refill.
+//   * REFILL_SEEDS — how many recent tracks to seed the similarity from
+//     (current track + the ones just before it), so the radio follows the
+//     session rather than a single song.
+const AUTOPLAY_KEY = "muse.autoplay";
+const REFILL_WHEN_REMAINING = 2;
+const REFILL_BATCH = 20;
+const REFILL_SEEDS = 5;
 
 // Debounce before firing the now-playing ping. Burning Last.fm's 5/sec
 // budget on rapid skips is wasteful and produces flickery "currently
@@ -41,6 +55,7 @@ export interface PlayerState {
   duration: number;
   volume: number;
   current: SubsonicSong | null;
+  autoplay: boolean;         // endless mode on/off
 }
 
 class Player {
@@ -58,11 +73,18 @@ class Player {
   // before NOW_PLAYING_DEBOUNCE_MS elapses, so quick skips don't
   // generate stale "currently listening" entries on Last.fm.
   private nowPlayingTimer: number | null = null;
+  // Endless mode: when true, the queue auto-extends near its end.
+  private autoplay = false;
+  // In-flight refill, shared so concurrent triggers (proactive + end-of-queue)
+  // await the same request instead of firing duplicates.
+  private refillPromise: Promise<void> | null = null;
 
   constructor() {
     // Restore volume from previous session if available.
     const savedVol = Number(localStorage.getItem("muse.volume") ?? "0.9");
     this.audio.volume = Number.isFinite(savedVol) ? savedVol : 0.9;
+    // Restore endless-mode preference (per-browser, default off).
+    this.autoplay = localStorage.getItem(AUTOPLAY_KEY) === "1";
 
     // We forward the small set of <audio> events we care about. Each one
     // pokes subscribers with the latest state.
@@ -97,10 +119,22 @@ class Player {
       localStorage.setItem("muse.volume", String(this.audio.volume));
       fwd();
     });
-    // When a track ends, advance the queue. If we're at the tail, stop.
+    // When a track ends, advance the queue. At the tail: in endless mode try
+    // one more refill then continue; otherwise stop. (Proactive refill in
+    // playAt usually means we never actually hit the tail, but this covers a
+    // slow/failed earlier fetch.)
     this.audio.addEventListener("ended", () => {
       if (this.index >= 0 && this.index < this.queue.length - 1) {
         this.playAt(this.index + 1);
+      } else if (this.autoplay) {
+        void this.maybeRefill().then(() => {
+          if (this.index < this.queue.length - 1) {
+            this.playAt(this.index + 1);
+          } else {
+            this.audio.pause();
+            this.emit();
+          }
+        });
       } else {
         this.audio.pause();
         this.emit();
@@ -200,6 +234,62 @@ class Player {
     this.emit();
     void this.save();
     this.scheduleNowPlaying(track.id);
+    // Proactively top up the queue when we're near its end, so endless mode
+    // has the next track ready before this one finishes.
+    void this.maybeRefill();
+  }
+
+  /* ---------- endless mode (autoplay) ---------- */
+
+  /** Turn endless mode on/off. Persisted per-browser. Turning it on near the
+   * end of the queue kicks off an immediate refill. */
+  setAutoplay(on: boolean): void {
+    this.autoplay = on;
+    localStorage.setItem(AUTOPLAY_KEY, on ? "1" : "0");
+    this.emit();
+    if (on) void this.maybeRefill();
+  }
+
+  /** Fetch similar tracks and append them when the queue is running low.
+   * Returns the in-flight request if one is already running, so the proactive
+   * (playAt) and end-of-queue (ended) triggers can't double-fetch. */
+  private maybeRefill(): Promise<void> {
+    if (!this.autoplay) return Promise.resolve();
+    if (this.refillPromise) return this.refillPromise;
+    if (this.index < 0 || this.queue.length === 0) return Promise.resolve();
+    const remaining = this.queue.length - 1 - this.index;
+    if (remaining > REFILL_WHEN_REMAINING) return Promise.resolve();
+
+    this.refillPromise = this.doRefill().finally(() => {
+      this.refillPromise = null;
+    });
+    return this.refillPromise;
+  }
+
+  private async doRefill(): Promise<void> {
+    // Seed from the most-recent tracks (current first, then the ones just
+    // played) so suggestions follow the session, not just the last song.
+    const seeds: string[] = [];
+    for (let i = this.index; i >= 0 && seeds.length < REFILL_SEEDS; i--) {
+      seeds.push(this.queue[i].id);
+    }
+    const exclude = this.queue.map(t => t.id);
+    try {
+      const fresh = await continueRadio(seeds, exclude, REFILL_BATCH);
+      // Defensive de-dup against the live queue: it may have changed while the
+      // request was in flight (user enqueued something, or a prior refill).
+      const have = new Set(this.queue.map(t => t.id));
+      const toAdd = fresh.filter(t => !have.has(t.id));
+      if (toAdd.length > 0) {
+        this.queue.push(...toAdd);
+        this.emit();
+        void this.save();
+      }
+    } catch (err) {
+      // Best-effort: a failed refill just means the queue may end. Don't
+      // surface it as an error — endless mode is a convenience.
+      console.debug("endless refill failed:", err);
+    }
   }
 
   /**
@@ -311,6 +401,7 @@ class Player {
         : (current?.duration ?? 0),
       volume: this.audio.volume,
       current,
+      autoplay: this.autoplay,
     };
   }
 
@@ -374,6 +465,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
         <button data-next title="Next">NEXT ▶▶</button>
         <button data-queue title="Show queue">QUEUE</button>
         <button data-lyrics title="Show lyrics">LYRICS</button>
+        <button data-autoplay title="Endless queue — keep adding tracks similar to what you've played">∞ ENDLESS</button>
       </div>
       <div class="scrub">
         <span class="time" data-cur>0:00</span>
@@ -400,6 +492,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   const elQueuePanel = $("[data-queue-panel]") as HTMLElement;
   const elQueueClose = $("[data-queue-close]") as HTMLButtonElement;
   const elQueueList = $("[data-queue-list]") as HTMLElement;
+  const elAutoplay = $("[data-autoplay]") as HTMLButtonElement;
   const elLyricsBtn = $("[data-lyrics]") as HTMLButtonElement;
   const elLyricsPanel = $("[data-lyrics-panel]") as HTMLElement;
   const elLyricsClose = $("[data-lyrics-close]") as HTMLButtonElement;
@@ -451,6 +544,7 @@ export function mountPlayerDock(host: HTMLElement): () => void {
   elPlay.addEventListener("click", () => player.toggle());
   elPrev.addEventListener("click", () => player.prev());
   elNext.addEventListener("click", () => player.next());
+  elAutoplay.addEventListener("click", () => player.setAutoplay(!player.snapshot().autoplay));
 
   // Queue panel toggle + jump-to-row delegation
   const renderQueue = (state: PlayerState) => {
@@ -639,6 +733,10 @@ export function mountPlayerDock(host: HTMLElement): () => void {
     }
     updateBadge(state.current);
     elPlay.textContent = state.playing ? "❚❚ PAUSE" : "▶ PLAY";
+    // Endless-mode toggle: accent + pressed state when on.
+    elAutoplay.classList.toggle("is-on", state.autoplay);
+    elAutoplay.setAttribute("aria-pressed", state.autoplay ? "true" : "false");
+    elAutoplay.style.color = state.autoplay ? "var(--accent)" : "";
     elCur.textContent = fmtDuration(state.currentTime);
     elDur.textContent = fmtDuration(state.duration);
     if (!isUserSeeking && state.duration > 0) {

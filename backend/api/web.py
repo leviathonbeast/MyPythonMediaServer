@@ -43,6 +43,7 @@ from backend.core import deezer
 from backend.core import lastfm
 from backend.core import listenbrainz
 from backend.core import library as library_core
+from backend.core import radio as radio_core
 from backend.core.sonic_analysis import (
     start_analyze_async,
     get_analyze_progress,
@@ -400,6 +401,46 @@ def listenbrainz_import_playlist(
         "total": len(remote_tracks),
         "unmatched": unmatched,
     }
+
+
+# ---------------------------------------------------------------------------
+# Endless-queue radio (autoplay continuation)
+# ---------------------------------------------------------------------------
+
+
+class RadioContinueRequest(BaseModel):
+    # Recently-played track ids (most-recent-first preferred), Subsonic-prefixed
+    # ("tr-123") or raw ints. These seed the sonic-similarity search.
+    seed_ids: list[str]
+    # Track ids already in the queue/session — excluded from the results so the
+    # continuation never repeats what's already lined up or just played.
+    exclude_ids: list[str] = []
+    # How many tracks to return. Clamped to a sane ceiling server-side.
+    count: int = 20
+
+
+@router.post("/radio/continue")
+def radio_continue(body: RadioContinueRequest, _=Depends(jwt_user)):
+    """Return fresh tracks to keep the queue going, sonically similar to what
+    was played recently. Powers the player's opt-in endless mode.
+
+    Empty `songs` is a normal, non-error response — it just means there's
+    nothing suitable to add (library not sonically analysed yet, or every
+    neighbour is already queued)."""
+
+    def _to_ids(raw: list[str]) -> list[int]:
+        ids: list[int] = []
+        for s in raw:
+            _, rid = library_core.parse_id(str(s))
+            if rid is not None:
+                ids.append(rid)
+        return ids
+
+    count = max(1, min(body.count, 100))
+    rows = radio_core.continue_from(
+        _to_ids(body.seed_ids), _to_ids(body.exclude_ids), count
+    )
+    return {"songs": [library_core.track_to_subsonic(r) for r in rows]}
 
 
 # ---------------------------------------------------------------------------

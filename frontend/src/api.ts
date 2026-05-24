@@ -508,6 +508,26 @@ export async function getSimilarSongs2(
   return env.similarSongs2?.song ?? [];
 }
 
+/**
+ * Endless-queue continuation. Given the recently-played track ids (`seedIds`)
+ * and the ids already queued/played (`excludeIds`), returns fresh tracks
+ * sonically similar to the recent listening — what the player appends when its
+ * opt-in endless mode runs the queue low. Empty when the library isn't analysed
+ * yet or there's nothing new to add.
+ */
+export async function continueRadio(
+  seedIds: string[],
+  excludeIds: string[],
+  count = 20,
+): Promise<SubsonicSong[]> {
+  const res = await apiPost<{ songs: SubsonicSong[] }>("/api/radio/continue", {
+    seed_ids: seedIds,
+    exclude_ids: excludeIds,
+    count,
+  });
+  return res.songs ?? [];
+}
+
 // ---- Lyrics ---------------------------------------------------------------
 
 /** One lyric line. `time` is seconds into the song, or -1 for an untimed

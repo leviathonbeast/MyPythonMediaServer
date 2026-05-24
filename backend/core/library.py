@@ -237,6 +237,34 @@ def get_song(song_id: str) -> Optional[Dict[str, any]]:
 
 
 # ---------------------------------------------------------------------------
+# Logical-song identity (de-duplication)
+# ---------------------------------------------------------------------------
+
+
+def logical_song_key(row: Optional[Dict[str, Any]]) -> Optional[Tuple]:
+    """Identify the *recording* a track row represents, for de-duplication.
+
+    A library routinely holds the same song as several files (a single plus its
+    album cut, a remaster, plain duplicate rips). Sonic-similarity features such
+    as "song radio" and the endless-queue continuation want to treat those as
+    one thing rather than offer the listener the same song several times.
+
+    The key is the recording MusicBrainz id when the file is tagged (globally
+    unique, language-agnostic), else a case-insensitive (artist, title) pair.
+    Returns None when neither is known — callers treat None as "no identity",
+    i.e. never a duplicate of anything else.
+    """
+    if row is None:
+        return None
+    mbid = (row.get("musicbrainz_id") or "").strip().lower()
+    if mbid:
+        return ("mbid", mbid)
+    artist = (row.get("artist_name") or "").strip().lower()
+    title = (row.get("title") or "").strip().lower()
+    return ("title", artist, title) if (artist or title) else None
+
+
+# ---------------------------------------------------------------------------
 # Track serialisation
 # ---------------------------------------------------------------------------
 
